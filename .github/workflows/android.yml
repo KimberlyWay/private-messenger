@@ -1,0 +1,30 @@
+name: Android
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '21'}
+      - uses: android-actions/setup-android@v3
+        with: {packages: platform-tools, log-accepted-android-sdk-licenses: false}
+      - run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile and check
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug assembleE2eAndroidTest lintDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: private-messenger-development-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
