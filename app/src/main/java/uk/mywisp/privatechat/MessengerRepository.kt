@@ -291,7 +291,21 @@ class MessengerRepository(private val context: Context) {
 
     fun older() = action { timeline?.paginateBackwards(30u) }
     fun dismissError() { mutable.update { it.copy(error = null) } }
-    fun refresh() = action { client?.enableAllSendQueues(true); refreshRooms(); refreshSecurity() }
+    private fun retryEncryptedEvents() {
+        val sessions = synchronized(itemLock) {
+            items.mapNotNull {
+                val kind = (it.asEvent()?.content as? TimelineItemContent.MsgLike)?.content?.kind as? MsgLikeKind.UnableToDecrypt
+                (kind?.msg as? EncryptedMessage.MegolmV1AesSha2)?.sessionId
+            }.distinct()
+        }
+        if (sessions.isNotEmpty()) timeline?.retryDecryption(sessions)
+    }
+    fun refresh() = action {
+        client?.enableAllSendQueues(true)
+        timeline?.fetchMembers()
+        retryEncryptedEvents()
+        refreshRooms(); refreshSecurity()
+    }
     fun createRecovery() = action {
         val encryption = requireNotNull(client).encryption()
         require(encryption.recoveryState() == RecoveryState.DISABLED && encryption.verificationState() == VerificationState.VERIFIED) {
@@ -303,7 +317,10 @@ class MessengerRepository(private val context: Context) {
         mutable.update { it.copy(recoveryKey = key) }; refreshSecurity()
     }
     fun hideRecovery() { mutable.update { it.copy(recoveryKey = null) } }
-    fun recover(key: String) = action { requireNotNull(client).encryption().recover(key.trim()); refreshSecurity() }
+    fun recover(key: String) = action {
+        requireNotNull(client).encryption().recover(key.trim())
+        timeline?.fetchMembers(); retryEncryptedEvents(); refreshSecurity()
+    }
     fun logout() = action {
         val c = client ?: return@action
         c.logout()

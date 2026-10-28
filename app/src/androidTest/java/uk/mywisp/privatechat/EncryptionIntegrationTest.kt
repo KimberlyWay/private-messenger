@@ -216,7 +216,10 @@ class EncryptionIntegrationTest {
             })
             history.fetchMembers()
             history.paginateBackwards(30u)
-            waitUntil("restored device decrypts history") { recoveredText.get() == marker }
+            waitUntil("restored device decrypts history with unchanged strict trust") {
+                history.retryDecryption(listOf(raw.getJSONObject("content").getString("session_id")))
+                recoveredText.get() == marker
+            }
             assertEquals(marker, recoveredText.get())
         } finally {
             tasks.forEach { runCatching { it.cancel() } }
