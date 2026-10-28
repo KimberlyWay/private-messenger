@@ -46,10 +46,11 @@ jobs:
           ./gradlew --no-daemon assembleRelease
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk dist/private-messenger-alpha.apk
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs dist/private-messenger-alpha.apk > dist/APK-SIGNING-CERTIFICATE.txt
           git archive --format=zip --output=dist/server-and-instructions.zip HEAD server README.md SECURITY.md
           git archive --format=zip --output=dist/source.zip HEAD
           cd dist
-          sha256sum *.apk *.zip > SHA256SUMS
+          sha256sum *.apk *.zip APK-SIGNING-CERTIFICATE.txt > SHA256SUMS
       - name: Publish alpha
         env:
           GH_TOKEN: ${{ github.token }}
