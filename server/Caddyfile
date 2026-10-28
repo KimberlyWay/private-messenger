@@ -8,7 +8,9 @@
         default {http.request.header.X-Real-IP}
     }
     handle /api/* {
-        request_body { max_size 16KB }
+        request_body {
+            max_size 16KB
+        }
         reverse_proxy gateway:8000 {
             header_up X-Real-IP {forwarded_client}
         }
@@ -22,11 +24,15 @@
     }
     @matrix path /_matrix/client/* /_matrix/media/*
     handle @matrix {
-        request_body { max_size 70MB }
+        request_body {
+            max_size 70MB
+        }
         reverse_proxy synapse:8008 {
             header_up X-Forwarded-For {forwarded_client}
         }
     }
     # Administration and federation endpoints are not exposed.
-    handle { respond 404 }
+    handle {
+        respond 404
+    }
 }

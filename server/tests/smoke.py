@@ -4,6 +4,7 @@ import os
 import urllib.error
 import urllib.request
 import uuid
+import time
 
 BASE = os.environ.get("TEST_BASE_URL", "http://127.0.0.1:8088")
 
@@ -21,6 +22,15 @@ def call(path, body=None, token=None, expected=200):
     assert status == expected, (path, status, data[:500])
     return json.loads(data) if data else {}
 
+
+for attempt in range(30):
+    try:
+        call("/healthz")
+        break
+    except (urllib.error.URLError, AssertionError):
+        time.sleep(1)
+else:
+    raise RuntimeError("Edge proxy did not become ready")
 
 suffix = uuid.uuid4().hex[:10]
 login, username, password = "login_" + suffix, "user_" + suffix, "Test-" + uuid.uuid4().hex
