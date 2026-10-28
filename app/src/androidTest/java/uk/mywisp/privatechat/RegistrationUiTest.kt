@@ -13,18 +13,24 @@ import java.util.UUID
 class RegistrationUiTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
 
+    private fun node(label: String): SemanticsNodeInteraction {
+        ui.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(label))
+        return ui.onNodeWithText(label)
+    }
+
+
     @Test fun chosenPrivateLoginAndPublicUsernameCreateARealAccount() {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
         val username = "ui_$suffix"
         val repo = (ui.activity.application as ChatApplication).repository
         try {
             ui.waitUntil(30_000) { !repo.state.value.loading }
-            ui.onNodeWithText("Создать аккаунт").performScrollTo().performClick()
-            ui.onNodeWithText("Адрес сервера").performScrollTo().performTextInput("http://10.0.2.2:8088")
-            ui.onNodeWithText("Логин для входа").performScrollTo().performTextInput("private_ui_$suffix")
-            ui.onNodeWithText("Публичный @username").performScrollTo().performTextInput(username)
-            ui.onNodeWithText("Пароль").performScrollTo().performTextInput("Test-" + UUID.randomUUID())
-            ui.onNodeWithText("Зарегистрироваться").performScrollTo().performClick()
+            node("Создать аккаунт").performClick()
+            node("Адрес сервера").performTextInput("http://10.0.2.2:8088")
+            node("Логин для входа").performTextInput("private_ui_$suffix")
+            node("Публичный @username").performTextInput(username)
+            node("Пароль").performTextInput("Test-" + UUID.randomUUID())
+            node("Зарегистрироваться").performClick()
             ui.waitUntil(60_000) { !repo.state.value.busy && repo.state.value.userId != null }
             ui.onNodeWithText("Начните первую переписку").assertIsDisplayed()
             ui.onNodeWithContentDescription("Настройки").performClick()
