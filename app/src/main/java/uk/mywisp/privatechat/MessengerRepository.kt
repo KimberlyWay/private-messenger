@@ -137,7 +137,7 @@ class MessengerRepository(private val context: Context) {
         }
     }
 
-    private fun refreshRooms() {
+    private suspend fun refreshRooms() {
         val rooms = client?.rooms().orEmpty().filter { it.membership() in listOf(Membership.JOINED, Membership.INVITED) }
             .map { room -> ChatRoom(room.id(), room.displayName() ?: room.rawName() ?: "Личная переписка",
                 room.membership() == Membership.INVITED, room.activeHumanMemberIds().firstOrNull { it != client?.userId() }) }
