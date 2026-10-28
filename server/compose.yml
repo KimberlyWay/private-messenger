@@ -1,0 +1,95 @@
+name: private-messenger
+services:
+  db:
+    image: postgres:16.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: appadmin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Run setup.py first}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./generated/init.sql:/docker-entrypoint-initdb.d/01-users.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U appadmin -d postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  synapse-init:
+    image: ghcr.io/element-hq/synapse:v1.164.0
+    environment:
+      SYNAPSE_SERVER_NAME: ${SERVER_NAME}
+      SYNAPSE_REPORT_STATS: 'no'
+      SYNAPSE_CONFIG_PATH: /data/bootstrap.yaml
+    volumes: [synapse-data:/data]
+    entrypoint: /bin/sh
+    command: ['-ec', 'if [ ! -f "/data/${SERVER_NAME}.signing.key" ]; then python /start.py generate; fi']
+
+  synapse:
+    image: ghcr.io/element-hq/synapse:v1.164.0
+    restart: unless-stopped
+    environment:
+      SYNAPSE_CONFIG_PATH: /config/homeserver.yaml
+    volumes:
+      - synapse-data:/data
+      - ./generated/homeserver.yaml:/config/homeserver.yaml:ro
+      - ./generated/log.config:/config/log.config:ro
+    depends_on:
+      db: {condition: service_healthy}
+      synapse-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, -fSs, 'http://localhost:8008/health']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      REGISTRATION_SHARED_SECRET: ${REGISTRATION_SHARED_SECRET}
+      GATEWAY_DATABASE_URL: postgresql://gateway:${GATEWAY_DATABASE_PASSWORD}@db/gateway
+      REGISTRATION_LIMIT: ${REGISTRATION_LIMIT:-5}
+    depends_on:
+      synapse: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  edge:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+    ports: ['127.0.0.1:${BIND_PORT:-8088}:8080']
+    volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro']
+    depends_on:
+      gateway: {condition: service_healthy}
+
+  tls:
+    profiles: [tls]
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME}
+    ports:
+      - '${HTTPS_PORT:-8443}:443'
+      - '80:80'
+    volumes:
+      - ./Caddyfile.tls:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [edge]
+
+volumes:
+  postgres-data:
+  synapse-data:
+  caddy-data:
+  caddy-config:

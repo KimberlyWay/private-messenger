@@ -1,0 +1,32 @@
+name: Server checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate Python
+        run: python -m compileall -q server
+      - name: Generate isolated CI configuration
+        run: python server/setup.py --domain ci.invalid --url http://10.0.2.2:8088 --test
+      - name: Start actual services
+        working-directory: server
+        run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Test public registration and login
+        run: python server/tests/smoke.py
+      - name: Logs on failure
+        if: failure()
+        working-directory: server
+        run: docker compose logs --tail 100
+      - name: Stop CI services
+        if: always()
+        working-directory: server
+        run: docker compose down -v

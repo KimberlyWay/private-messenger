@@ -1,0 +1,16 @@
+.env
+server/.env
+server/generated/
+server/certs/
+server/backups/
+.gradle/
+.kotlin/
+.idea/
+local.properties
+**/build/
+**/__pycache__/
+.pytest_cache/
+*.jks
+*.keystore
+*.p12
+*.log
