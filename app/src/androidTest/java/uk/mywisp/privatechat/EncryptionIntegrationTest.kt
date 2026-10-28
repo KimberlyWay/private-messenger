@@ -26,15 +26,15 @@ class EncryptionIntegrationTest {
     private val clients = mutableListOf<Client>()
     private val tasks = mutableListOf<TaskHandle>()
 
-    private suspend fun client(login: String, password: String): Pair<Client, JSONObject> {
+    private suspend fun client(login: String, password: String, crossSign: Boolean = true): Pair<Client, JSONObject> {
         val session = Gateway.call(base, "/api/login", JSONObject().put("login", login).put("password", password))
         val root = File(context.cacheDir, "integration/" + UUID.randomUUID()).apply { mkdirs() }
         val c = ClientBuilder().homeserverUrl(base).disableWellKnownLookup(true)
             .sqliteStore(SqliteStoreBuilder(root.path, root.path).key(ByteArray(32).also { SecureRandom().nextBytes(it) }))
             .slidingSyncVersionBuilder(SlidingSyncVersionBuilder.NONE)
-            .autoEnableCrossSigning(true).autoEnableBackups(true)
+            .autoEnableCrossSigning(crossSign).autoEnableBackups(crossSign)
             .roomKeyRecipientStrategy(CollectStrategy.IDENTITY_BASED_STRATEGY)
-            .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED)).build()
+            .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED_OR_LEGACY)).build()
         clients += c
         Gateway.call(base, "/_matrix/client/v3/logout", JSONObject(), session.getString("access_token"))
         c.login(session.getString("user_id"), password, "Encryption integration", null)
@@ -124,6 +124,38 @@ class EncryptionIntegrationTest {
         }
     }
 
+    private suspend fun verifyUnsignedDeviceRejected(bob: Client, password: String, suffix: String) {
+        val login = "login_c_$suffix"
+        Gateway.call(base, "/api/register", JSONObject().put("login", login).put("username", "charlie_$suffix").put("password", password))
+        val (unsigned, _) = client(login, password, crossSign = false)
+        assertNotEquals(VerificationState.VERIFIED, unsigned.encryption().verificationState())
+        val roomId = unsigned.createRoom(CreateRoomParameters(name = null, isEncrypted = true, isDirect = true,
+            visibility = RoomVisibility.Private, preset = RoomPreset.PRIVATE_CHAT, invite = listOf(bob.userId())))
+        withTimeout(60_000) { unsigned.awaitRoomRemoteEcho(roomId) }
+        waitUntil("Bob receives unsigned sender invitation") { bob.getRoom(roomId)?.membership() == Membership.INVITED }
+        bob.getRoom(roomId)!!.join()
+        waitUntil("Bob joins unsigned sender room") { bob.getRoom(roomId)?.membership() == Membership.JOINED }
+        val rejected = AtomicReference<uniffi.matrix_sdk_crypto.UtdCause?>()
+        val leaked = AtomicReference(false)
+        val marker = "unsigned-" + UUID.randomUUID()
+        val incoming = bob.getRoom(roomId)!!.timeline()
+        tasks += incoming.addListener(object : TimelineListener {
+            override fun onUpdate(diff: List<TimelineDiff>) {
+                for (item in changedItems(diff)) {
+                    when (val kind = (item.asEvent()?.content as? TimelineItemContent.MsgLike)?.content?.kind) {
+                        is MsgLikeKind.UnableToDecrypt -> (kind.msg as? EncryptedMessage.MegolmV1AesSha2)?.let { rejected.set(it.cause) }
+                        is MsgLikeKind.Message -> if (kind.content.body == marker) leaked.set(true)
+                        else -> Unit
+                    }
+                }
+            }
+        })
+        unsigned.getRoom(roomId)!!.timeline().send(messageEventContentNew(MessageType.Text(TextMessageContent(marker, null))))
+        waitUntil("Fresh unsigned device rejected by cross-signed-or-legacy policy") { leaked.get() || rejected.get() == uniffi.matrix_sdk_crypto.UtdCause.UNSIGNED_DEVICE }
+        assertFalse("Compatibility must not admit unsigned fresh sessions", leaked.get())
+        assertEquals(uniffi.matrix_sdk_crypto.UtdCause.UNSIGNED_DEVICE, rejected.get())
+    }
+
     @Test
     fun messagesAndFilesAreCiphertextOnServerAndRecoverOnNewDevice() = runBlocking(Dispatchers.IO) {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
@@ -205,22 +237,29 @@ class EncryptionIntegrationTest {
             waitUntil("restored device verified") { restored.encryption().verificationState() == VerificationState.VERIFIED }
             waitUntil("restored room available") { restored.getRoom(roomId) != null }
             val recoveredText = AtomicReference<String?>()
+            val recoveredShield = AtomicReference<ShieldState?>()
             val history = restored.getRoom(roomId)!!.timeline()
             tasks += history.addListener(object : TimelineListener {
                 override fun onUpdate(diff: List<TimelineDiff>) {
                     for (item in changedItems(diff)) {
                         val msg = ((item.asEvent()?.content as? TimelineItemContent.MsgLike)?.content?.kind as? MsgLikeKind.Message)?.content
-                        if (msg?.body == marker) recoveredText.set(marker)
+                        if (msg?.body == marker) {
+                            recoveredText.set(marker)
+                            recoveredShield.set(item.asEvent()!!.lazyProvider.getShields(true))
+                        }
                     }
                 }
             })
             history.fetchMembers()
             history.paginateBackwards(30u)
-            waitUntil("restored device decrypts history with unchanged strict trust") {
+            waitUntil("restored device decrypts legacy history with SDK provenance warning") {
                 history.retryDecryption(listOf(raw.getJSONObject("content").getString("session_id")))
                 recoveredText.get() == marker
             }
             assertEquals(marker, recoveredText.get())
+            assertNotNull("Recovered history must expose sender provenance status", recoveredShield.get())
+            assertNotEquals("Unverified legacy history must carry an SDK warning", ShieldState.None, recoveredShield.get())
+            verifyUnsignedDeviceRejected(bob, password, suffix)
         } finally {
             tasks.forEach { runCatching { it.cancel() } }
             clients.forEach { runCatching { it.close() } }

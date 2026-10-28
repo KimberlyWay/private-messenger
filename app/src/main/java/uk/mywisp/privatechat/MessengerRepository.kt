@@ -21,7 +21,7 @@ import java.util.UUID
 data class ChatRoom(val id: String, val name: String, val invited: Boolean)
 data class Attachment(val source: MediaSource, val name: String, val mime: String, val kind: String)
 data class ChatMessage(val id: String, val sender: String, val own: Boolean, val time: Long,
-    val text: String, val attachment: Attachment? = null, val status: String = "")
+    val text: String, val attachment: Attachment? = null, val status: String = "", val trustWarning: String? = null)
 data class VerificationPrompt(val stage: String, val title: String, val content: String)
 data class ChatState(
     val loading: Boolean = true, val busy: Boolean = false, val error: String? = null,
@@ -90,7 +90,7 @@ class MessengerRepository(private val context: Context) {
             .slidingSyncVersionBuilder(SlidingSyncVersionBuilder.NONE)
             .autoEnableCrossSigning(true).autoEnableBackups(true)
             .roomKeyRecipientStrategy(CollectStrategy.IDENTITY_BASED_STRATEGY)
-            .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED))
+            .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED_OR_LEGACY))
             .userAgent("PrivateMessenger/" + BuildConfig.VERSION_NAME)
             .build()
         if (password != null) {
@@ -209,7 +209,14 @@ class MessengerRepository(private val context: Context) {
             is MessageType.Audio -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "audio/mp4", "voice")
             else -> null
         }
-        return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(), msg.body, attachment, status)
+        // Matrix v1 backups lack authenticated sender provenance. Preserve the
+        // SDK warning for recovered legacy sessions and unverified identities.
+        val warning = when (event.lazyProvider.getShields(true)) {
+            ShieldState.None -> null
+            is ShieldState.Red -> "Подлинность отправителя не подтверждена. История из резервной копии может иметь этот статус."
+            is ShieldState.Grey -> "Сверьте эмодзи с собеседником: его личность ещё не подтверждена."
+        }
+        return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(), msg.body, attachment, status, warning)
     }
 
     fun back() { closeActiveRoom(); mutable.update { it.copy(roomId = null, peerId = null, messages = emptyList()) } }

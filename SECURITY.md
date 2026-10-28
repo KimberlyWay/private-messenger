@@ -2,6 +2,8 @@
 
 This project is an experimental alpha, not an independently audited messenger. Do not use it for sensitive communications until native E2EE integration and physical-device verification have passed.
 
+The SDK policy is `CrossSignedOrLegacy`: fresh unsigned sessions are rejected, but imported legacy backup sessions can be displayed with the SDK provenance warning. Matrix v1 asymmetric backups do not authenticate historical sender provenance against a malicious homeserver; warning-bearing recovered history is not proof of authorship. `Untrusted` decryption is not enabled.
+
 Message and media cryptography is delegated to Matrix Rust SDK; server TLS is provided by a trusted certificate. The homeserver can observe account and traffic metadata. Device compromise, malicious APK updates, and unverified first-contact identities remain outside content-encryption guarantees.
 
 Never post real passwords, access tokens, recovery keys, keystores, server `.env`, generated configuration, database dumps or decrypted message logs in issues. Use synthetic accounts to reproduce a problem. If no private reporting channel is available, open an issue requesting one without disclosing exploit details or personal data.

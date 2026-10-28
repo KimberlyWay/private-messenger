@@ -338,6 +338,7 @@ private fun MessageBubble(repo: MessengerRepository, message: ChatMessage) {
                         }
                     }
                 }
+                message.trustWarning?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
                 Text(if (message.status.isNotEmpty()) message.status else SimpleDateFormat("HH:mm",
                     Locale.forLanguageTag(androidx.compose.ui.text.intl.Locale.current.toLanguageTag())).format(Date(message.time)),
                     style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.End))
