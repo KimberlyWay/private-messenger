@@ -158,6 +158,7 @@ class EncryptionIntegrationTest {
 
     @Test
     fun messagesAndFilesAreCiphertextOnServerAndRecoverOnNewDevice() = runBlocking(Dispatchers.IO) {
+        android.util.Log.i("EncryptionTest", "Target=${context.packageName}; test HTTP allowed=${android.security.NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("10.0.2.2")}")
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
         val aliceLogin = "login_a_$suffix"
         val bobLogin = "login_b_$suffix"
