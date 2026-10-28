@@ -62,6 +62,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.matrix.rustcomponents:sdk-android:26.10.23")
+    implementation("org.rustls:rustls-platform-verifier:0.2.0")
     implementation("androidx.camera:camera-camera2:1.6.2")
     implementation("androidx.camera:camera-lifecycle:1.6.2")
     implementation("androidx.camera:camera-view:1.6.2")

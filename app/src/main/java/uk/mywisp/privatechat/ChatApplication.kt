@@ -10,6 +10,7 @@ class ChatApplication : Application() {
         private set
     override fun onCreate() {
         super.onCreate()
+        org.matrix.rustsdk.Android.init(this)
         initPlatform(TracingConfiguration(LogLevel.ERROR, emptyList(), emptyList(), BuildConfig.ALLOW_TEST_HTTP, null, null), false)
         repository = MessengerRepository(this)
     }

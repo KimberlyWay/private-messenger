@@ -40,9 +40,9 @@ class EncryptionIntegrationTest {
         c.login(session.getString("user_id"), password, "Encryption integration", null)
         val native = c.session()
         session.put("access_token", native.accessToken).put("device_id", native.deviceId)
-        tasks += c.syncV2(SyncSettingsV2(), object : SyncListenerV2 { override fun onUpdate(response: SyncResponseV2) {} })
         android.util.Log.i("EncryptionTest", "Starting first sync: ${c.userId()}")
         withTimeout(30_000) { c.syncOnceV2(SyncSettingsV2(timeoutMs = 0u)) }
+        tasks += c.syncV2(SyncSettingsV2(), object : SyncListenerV2 { override fun onUpdate(response: SyncResponseV2) {} })
         android.util.Log.i("EncryptionTest", "First sync done; waiting for crypto initialization")
         try { withTimeout(60_000) { c.encryption().waitForE2eeInitializationTasks() } }
         catch (e: TimeoutCancellationException) { throw AssertionError("Crypto initialization timed out for ${c.userId()}; verification=${c.encryption().verificationState()}", e) }
