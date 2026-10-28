@@ -50,7 +50,7 @@ class EncryptionIntegrationTest {
         return c to session
     }
 
-    private suspend fun waitUntil(label: String, test: () -> Boolean) {
+    private suspend fun waitUntil(label: String, test: suspend () -> Boolean) {
         android.util.Log.i("EncryptionTest", label)
         try { withTimeout(90_000) { while (!test()) delay(500) } }
         catch (e: TimeoutCancellationException) { throw AssertionError("Timed out: $label", e) }
@@ -114,8 +114,10 @@ class EncryptionIntegrationTest {
                 left.approveVerification(); right.approveVerification()
                 leftDone.await(); rightDone.await()
             }
-            assertTrue(alice.encryption().userIdentity(bob.userId(), true)!!.isVerified())
-            assertTrue(bob.encryption().userIdentity(alice.userId(), true)!!.isVerified())
+            waitUntil("Both SAS peers become verified after signature upload") {
+                alice.encryption().userIdentity(bob.userId(), true)?.isVerified() == true &&
+                    bob.encryption().userIdentity(alice.userId(), true)?.isVerified() == true
+            }
         } finally {
             left.setDelegate(null); right.setDelegate(null)
             left.close(); right.close()
@@ -192,7 +194,13 @@ class EncryptionIntegrationTest {
             val encrypted = try { connection.inputStream.use { it.readBytes() } } finally { connection.disconnect() }
             assertFalse("Media bytes stored on VPS must be encrypted", encrypted.contentEquals(bytes))
             alice.encryption().waitForBackupUploadSteadyState(null)
-            val (restored, _) = client(aliceLogin, password)
+            val (restored, restoredSession) = client(aliceLogin, password)
+            val keys = Gateway.call(base, "/_matrix/client/v3/keys/query", JSONObject().put("device_keys",
+                JSONObject().put(alice.userId(), org.json.JSONArray())), restoredSession.getString("access_token"))
+            val oldDevice = keys.getJSONObject("device_keys").getJSONObject(alice.userId()).optJSONObject(aliceSession.getString("device_id"))
+            assertNotNull("Original sender device must still have published keys", oldDevice)
+            assertTrue("Original device must have a cross-signing signature", oldDevice!!.getJSONObject("signatures")
+                .getJSONObject(alice.userId()).length() > 1)
             withTimeout(120_000) { restored.encryption().recover(recovery) }
             waitUntil("restored device verified") { restored.encryption().verificationState() == VerificationState.VERIFIED }
             waitUntil("restored room available") { restored.getRoom(roomId) != null }
