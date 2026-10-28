@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -23,7 +26,14 @@ jobs:
       - name: Compile and check
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug assembleE2eAndroidTest lintDebug
+          ./gradlew --no-daemon assembleDebug assembleE2e assembleE2eAndroidTest lintDebug
+      - name: Inspect isolated test network policy
+        run: |
+          for apk in app/build/outputs/apk/e2e/*.apk app/build/outputs/apk/androidTest/e2e/*.apk; do
+            echo "$apk"
+            "$ANDROID_HOME/build-tools/37.0.0/aapt2" dump xmltree "$apk" --file AndroidManifest.xml | rg 'usesCleartextTraffic|networkSecurityConfig' || true
+            "$ANDROID_HOME/build-tools/37.0.0/aapt2" dump xmltree "$apk" --file res/xml/test_network_security_config.xml
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: private-messenger-development-apk
