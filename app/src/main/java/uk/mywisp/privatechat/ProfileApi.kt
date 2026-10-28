@@ -23,7 +23,7 @@ internal object ProfileApi {
 
     fun avatar(base: String, token: String, user: String, mxc: String?) {
         Gateway.call(base, "/_matrix/client/v3/profile/${Gateway.escaped(user)}/avatar_url",
-            JSONObject().put("avatar_url", mxc ?: JSONObject.NULL), token, "PUT")
+            JSONObject().put("avatar_url", mxc ?: ""), token, "PUT")
     }
 
     fun upload(base: String, token: String, jpeg: ByteArray): String {
