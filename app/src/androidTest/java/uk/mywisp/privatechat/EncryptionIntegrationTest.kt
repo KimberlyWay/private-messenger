@@ -117,6 +117,10 @@ class EncryptionIntegrationTest {
             val source = imageSource.get()!!
             assertTrue("Encrypted media contains its client-side key", source.toJson().contains("key"))
             assertArrayEquals(bytes, bob.getMediaContent(source))
+            val handle = bob.getMediaFile(source, "test.png", "image/png", true, context.cacheDir.path)
+            val opened = File(context.cacheDir, "verified-media-${UUID.randomUUID()}.png")
+            try { assertTrue(handle.persist(opened.path)) } finally { handle.close() }
+            assertArrayEquals(bytes, opened.readBytes())
             val parts = source.url().removePrefix("mxc://").split('/', limit = 2)
             val connection = URL(base + "/_matrix/client/v1/media/download/" + Gateway.escaped(parts[0]) + "/" + Gateway.escaped(parts[1])).openConnection() as HttpURLConnection
             connection.setRequestProperty("Authorization", "Bearer " + bobSession.getString("access_token"))

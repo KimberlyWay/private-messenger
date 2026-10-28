@@ -42,6 +42,7 @@ class MessengerRepository(private val context: Context) {
     private var listener: TaskHandle? = null
     private var verificationController: SessionVerificationController? = null
     private var verificationRequest: SessionVerificationRequestDetails? = null
+    private var verificationPeer: String = ""
     private var sessionData: JSONObject? = null
     private var timelineGeneration = ""
     private val items = mutableListOf<TimelineItem>()
@@ -312,6 +313,7 @@ class MessengerRepository(private val context: Context) {
 
     fun requestVerification() = action {
         val peer = requireNotNull(state.value.peerId) { "Собеседник ещё не присоединился" }
+        verificationPeer = peer
         verificationController?.requestUserVerification(peer)
         mutable.update { it.copy(verification = VerificationPrompt("waiting", "Проверка собеседника", "Ожидаем подтверждения на втором устройстве…")) }
     }
@@ -330,6 +332,7 @@ class MessengerRepository(private val context: Context) {
     private val verificationDelegate = object : SessionVerificationControllerDelegate {
         override fun didReceiveVerificationRequest(details: SessionVerificationRequestDetails) {
             verificationRequest = details
+            verificationPeer = details.senderProfile.userId
             mutable.update { it.copy(verification = VerificationPrompt("request", "Запрос проверки", details.senderProfile.userId)) }
         }
         override fun didAcceptVerificationRequest() {
@@ -341,7 +344,7 @@ class MessengerRepository(private val context: Context) {
                 is SessionVerificationData.Emojis -> data.emojis.joinToString("  ") { it.symbol() }
                 is SessionVerificationData.Decimals -> data.values.joinToString("  ")
             }
-            mutable.update { it.copy(verification = VerificationPrompt("compare", "Сравните на двух устройствах", value)) }
+            mutable.update { it.copy(verification = VerificationPrompt("compare", "Сравните на двух устройствах", "$verificationPeer\n\n$value")) }
         }
         override fun didFail() { mutable.update { it.copy(verification = VerificationPrompt("done", "Проверка не выполнена", "Попробуйте ещё раз. Не подтверждайте несовпадающие символы.")) } }
         override fun didCancel() { mutable.update { it.copy(verification = null) } }

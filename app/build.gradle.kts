@@ -20,6 +20,7 @@ android {
     }
     signingConfigs {
         create("privateRelease") {
+            storeType = "PKCS12"
             System.getenv("ANDROID_KEYSTORE_PATH")?.let { storeFile = file(it) }
             storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
             keyAlias = "messenger"
@@ -42,12 +43,12 @@ android {
     testBuildType = "e2e"
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
     packaging { resources.excludes += "META-INF/AL2.0"; resources.excludes += "META-INF/LGPL2.1" }
 }
-kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
+kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_21) } }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
