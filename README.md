@@ -105,7 +105,9 @@ docker compose -f server/compose.yml --profile tls down
 4. APK через терминал: `./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`). Файл: `app/build/outputs/apk/debug/app-debug.apk`.
 5. В GitHub откройте Actions → Android → успешный запуск → artifact `private-messenger-development-apk`.
 
-Сейчас сборки **development/debug**. Постоянная подпись распространения ещё не настроена; не рассчитывайте на установку будущих APK поверх существующего без переустановки. Переустановка может удалить локальные ключи — сохраните ключ восстановления до неё. Шаблон release-конфигурации читает переменные `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD` (alias `messenger`); приватные ключи нельзя коммитить в репозиторий.
+Сейчас сборки **development/debug**. Постоянная подпись распространения ещё не настроена; не рассчитывайте на установку будущих APK поверх существующего без переустановки. Переустановка может удалить локальные ключи — сохраните ключ восстановления до неё. Ручной workflow `Signed alpha release` подготовлен: он проверяет успешность серверных, Android- и E2EE-тестов именно для выпускаемого коммита, затем собирает APK, серверный ZIP, полный исходный ZIP и SHA256SUMS. Постоянный ключ ещё не создан и не загружен; workflow не сможет выпустить APK без настройки `ANDROID_KEYSTORE_BASE64` и `ANDROID_KEYSTORE_PASSWORD` в GitHub Actions Secrets. Перед следующими версиями увеличивайте `versionCode` и `versionName` в `app/build.gradle.kts`.
+
+Шаблон release-конфигурации читает переменные `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD` (alias `messenger`); приватные ключи нельзя коммитить в репозиторий.
 
 Если Gradle не скачивается, откройте окно Build и посмотрите точный URL/ошибку. Первый запуск требует доступа к Google Maven, Maven Central и Gradle distributions; ошибки DNS, TLS, прокси и ограничения сети не исправляются удалением файлов проекта. Не включайте Offline mode до первой успешной загрузки зависимостей.
 
