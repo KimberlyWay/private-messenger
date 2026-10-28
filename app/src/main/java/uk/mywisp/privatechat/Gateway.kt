@@ -16,16 +16,17 @@ object Gateway {
         return input.trim().trimEnd('/')
     }
 
-    fun call(base: String, path: String, body: JSONObject? = null, token: String? = null): JSONObject {
+    fun call(base: String, path: String, body: JSONObject? = null, token: String? = null,
+             method: String = if (body != null) "POST" else "GET"): JSONObject {
         val connection = URL(base + path).openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = false
         connection.connectTimeout = 20_000
         connection.readTimeout = 40_000
+        connection.requestMethod = method
         connection.setRequestProperty("Accept", "application/json")
         token?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
         try {
             if (body != null) {
-                connection.requestMethod = "POST"
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "application/json")
                 connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }

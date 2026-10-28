@@ -20,7 +20,7 @@ import java.security.SecureRandom
 import java.time.Duration
 import java.util.UUID
 
-data class ChatRoom(val id: String, val name: String, val invited: Boolean)
+data class ChatRoom(val id: String, val name: String, val invited: Boolean, val peerId: String? = null)
 data class Attachment(val source: MediaSource, val name: String, val mime: String, val kind: String)
 data class ChatMessage(val id: String, val sender: String, val own: Boolean, val time: Long,
     val text: String, val attachment: Attachment? = null, val status: String = "", val trustWarning: String? = null)
@@ -31,9 +31,12 @@ data class ChatState(
     val roomId: String? = null, val roomName: String = "", val peerId: String? = null,
     val messages: List<ChatMessage> = emptyList(), val recovery: String = "UNKNOWN",
     val verified: Boolean = false, val recoveryKey: String? = null,
-    val verification: VerificationPrompt? = null)
+    val verification: VerificationPrompt? = null,
+    val displayName: String = "", val avatarUrl: String? = null, val profileRevision: Int = 0)
 
 class MessengerRepository(private val context: Context) {
+    val appearance = AppearancePreferences(context)
+    private val profiles = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, UserProfile>>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val vault = Vault(context)
     private val actionMutex = Mutex()
@@ -78,6 +81,7 @@ class MessengerRepository(private val context: Context) {
         connect(response, password)
         vault.save(response)
         if (register) client?.setDisplayName(username.trim().removePrefix("@"))
+        runCatching { refreshProfile() }
     }
 
     private suspend fun connect(data: JSONObject, password: String? = null) {
@@ -122,6 +126,7 @@ class MessengerRepository(private val context: Context) {
         setupVerificationController()
         refreshRooms()
         refreshSecurity()
+        runCatching { refreshProfile() }
     }
 
     private suspend fun setupVerificationController() {
@@ -134,7 +139,8 @@ class MessengerRepository(private val context: Context) {
 
     private fun refreshRooms() {
         val rooms = client?.rooms().orEmpty().filter { it.membership() in listOf(Membership.JOINED, Membership.INVITED) }
-            .map { ChatRoom(it.id(), it.displayName() ?: it.rawName() ?: "Личная переписка", it.membership() == Membership.INVITED) }
+            .map { room -> ChatRoom(room.id(), room.displayName() ?: room.rawName() ?: "Личная переписка",
+                room.membership() == Membership.INVITED, room.activeHumanMemberIds().firstOrNull { it != client?.userId() }) }
         mutable.update { it.copy(rooms = rooms) }
     }
 
@@ -311,6 +317,65 @@ class MessengerRepository(private val context: Context) {
     }
 
     fun older() = action { timeline?.paginateBackwards(30u) }
+
+    private fun refreshProfile() {
+        val data = sessionData ?: return
+        val current = client ?: return
+        val profile = ProfileApi.get(state.value.server, data.getString("access_token"), current.userId())
+        if (client !== current) return
+        profiles[current.userId()] = System.currentTimeMillis() to profile
+        mutable.update { it.copy(displayName = profile.name, avatarUrl = profile.avatar, profileRevision = it.profileRevision + 1) }
+    }
+
+    fun saveProfile(name: String) = action {
+        val clean = name.trim()
+        require(clean.isNotBlank() && clean.length <= 64) { "Имя: от 1 до 64 символов" }
+        val data = requireNotNull(sessionData)
+        ProfileApi.name(state.value.server, data.getString("access_token"), requireNotNull(client).userId(), clean)
+        refreshProfile()
+    }
+
+    fun setAvatar(uri: Uri) = action {
+        val data = requireNotNull(sessionData)
+        val token = data.getString("access_token")
+        val jpeg = avatarJpeg(context, uri)
+        val mxc = ProfileApi.upload(state.value.server, token, jpeg)
+        ProfileApi.avatar(state.value.server, token, requireNotNull(client).userId(), mxc)
+        refreshProfile()
+    }
+
+    fun removeAvatar() = action {
+        val data = requireNotNull(sessionData)
+        ProfileApi.avatar(state.value.server, data.getString("access_token"), requireNotNull(client).userId(), null)
+        refreshProfile()
+    }
+
+    suspend fun profilePhoto(user: String): File? = withContext(Dispatchers.IO) {
+        val data = sessionData ?: return@withContext null
+        val current = client ?: return@withContext null
+        val base = data.getString("homeserver")
+        val token = data.getString("access_token")
+        val cached = profiles[user]
+        val profile = if (cached != null && System.currentTimeMillis() - cached.first < 60_000) cached.second else {
+            ProfileApi.get(base, token, user).also {
+                if (profiles.size > 200) profiles.clear()
+                profiles[user] = System.currentTimeMillis() to it
+            }
+        }
+        val mxc = profile.avatar ?: return@withContext null
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest((base + mxc).toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        val directory = File(context.cacheDir, "profile-photos").apply { mkdirs() }
+        val file = File(directory, hash + ".img")
+        if (!file.isFile) {
+            val bytes = ProfileApi.download(base, token, mxc)
+            check(client === current) { "Сеанс завершён" }
+            val temp = File.createTempFile("avatar-", ".tmp", directory)
+            try { temp.writeBytes(bytes); check(temp.renameTo(file) || file.isFile) }
+            finally { temp.delete() }
+        }
+        file
+    }
     fun dismissError() { mutable.update { it.copy(error = null) } }
     private fun retryEncryptedEvents() {
         val sessions = synchronized(itemLock) {
@@ -326,7 +391,7 @@ class MessengerRepository(private val context: Context) {
         setupVerificationController()
         timeline?.fetchMembers()
         retryEncryptedEvents()
-        refreshRooms(); refreshSecurity()
+        refreshRooms(); refreshSecurity(); profiles.clear(); runCatching { refreshProfile() }
     }
     fun createRecovery() = action {
         val encryption = requireNotNull(client).encryption()
@@ -348,7 +413,8 @@ class MessengerRepository(private val context: Context) {
         c.logout()
         closeActiveRoom(); sync?.cancel(); sync = null
         verificationController?.setDelegate(null); verificationController?.close(); verificationController = null
-        c.close(); client = null; vault.clear(); sessionData = null
+        c.close(); client = null; vault.clear(); sessionData = null; profiles.clear()
+        File(context.cacheDir, "profile-photos").deleteRecursively()
         mutable.value = ChatState(loading = false)
     }
 

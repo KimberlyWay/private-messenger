@@ -12,11 +12,12 @@ android {
         applicationId = "uk.mywisp.privatechat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["allowCleartext"] = "false"
         buildConfigField("boolean", "ALLOW_TEST_HTTP", "false")
+        buildConfigField("String", "DEFAULT_SERVER", "\"https://144.31.107.221:8443\"")
     }
     signingConfigs {
         create("privateRelease") {
@@ -30,6 +31,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Keep emulator libraries in development/test builds only.
+            ndk { abiFilters += listOf("arm64-v8a") }
             if (System.getenv("ANDROID_KEYSTORE_PATH") != null) signingConfig = signingConfigs.getByName("privateRelease")
         }
         create("e2e") {
@@ -38,6 +41,7 @@ android {
             matchingFallbacks += listOf("debug")
             manifestPlaceholders["allowCleartext"] = "true"
             buildConfigField("boolean", "ALLOW_TEST_HTTP", "true")
+            buildConfigField("String", "DEFAULT_SERVER", "\"http://10.0.2.2:8088\"")
         }
     }
     testBuildType = "e2e"

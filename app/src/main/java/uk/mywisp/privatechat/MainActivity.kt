@@ -41,6 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -71,17 +72,31 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { PrivateTheme { Messenger((application as ChatApplication).repository, this) } }
+        val repo = (application as ChatApplication).repository
+        setContent {
+            val appearance by repo.appearance.state.collectAsStateWithLifecycle()
+            PrivateTheme(appearance) { Messenger(repo, this) }
+        }
     }
 }
 
 @Composable
-fun PrivateTheme(content: @Composable () -> Unit) {
+fun PrivateTheme(appearance: Appearance = Appearance(), content: @Composable () -> Unit) {
     val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
-    val colors = if (android.os.Build.VERSION.SDK_INT >= 31) {
+    val dark = when (appearance.theme) { "light" -> false; "dark" -> true; else -> isSystemInDarkTheme() }
+    val accent = when (appearance.accent) {
+        "ocean" -> if (dark) Color(0xFF8AD0ED) else Color(0xFF006783)
+        "forest" -> if (dark) Color(0xFFA0D5AF) else Color(0xFF286B42)
+        else -> if (dark) Color(0xFFD0BCFF) else Color(0xFF6750A4)
+    }
+    val colors = if (appearance.accent == "dynamic" && android.os.Build.VERSION.SDK_INT >= 31) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else if (dark) darkColorScheme() else lightColorScheme()
+    } else if (dark) darkColorScheme(primary = accent, onPrimary = Color(0xFF17212B),
+        primaryContainer = accent.copy(alpha = 1f).let { Color(it.red * .25f, it.green * .25f, it.blue * .25f) },
+        onPrimaryContainer = Color(0xFFF1EDFF))
+    else lightColorScheme(primary = accent, onPrimary = Color.White,
+        primaryContainer = Color(.88f + accent.red * .08f, .88f + accent.green * .08f, .88f + accent.blue * .08f),
+        onPrimaryContainer = Color(0xFF1C2430))
     MaterialExpressiveTheme(colorScheme = colors, content = content)
 }
 
@@ -102,7 +117,7 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
     } else {
         Scaffold(topBar = {
             TopAppBar(title = { Column {
-                Text(if (settings) "Настройки" else if (s.roomId != null) s.roomName else "Личный чат", maxLines = 1)
+                Text(if (settings) "Профиль" else if (s.roomId != null) s.roomName else "Чаты", maxLines = 1)
                 if (s.roomId != null && !settings) Text("Сквозное шифрование", style = MaterialTheme.typography.labelSmall)
             } }, navigationIcon = {
                 if (settings || s.roomId != null) IconButton(onClick = { if (settings) settings = false else repo.back() }) {
@@ -115,6 +130,13 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
                 IconButton(onClick = repo::refresh, enabled = !s.busy) { Icon(Icons.Default.Refresh, "Обновить") }
                 if (!settings) IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Настройки") }
             })
+        }, bottomBar = {
+            if (s.roomId == null || settings) NavigationBar {
+                NavigationBarItem(selected = !settings, onClick = { settings = false; repo.back() },
+                    icon = { Icon(Icons.Default.ChatBubbleOutline, null) }, label = { Text("Чаты") })
+                NavigationBarItem(selected = settings, onClick = { settings = true },
+                    icon = { Icon(Icons.Default.Person, null) }, label = { Text("Профиль") })
+            }
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 if (s.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -156,7 +178,6 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
 @Composable
 private fun AuthenticationScreen(repo: MessengerRepository, s: ChatState) {
     var register by rememberSaveable { mutableStateOf(false) }
-    var server by rememberSaveable { mutableStateOf("") }
     var login by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     // Passwords deliberately do not use rememberSaveable.
@@ -165,9 +186,7 @@ private fun AuthenticationScreen(repo: MessengerRepository, s: ChatState) {
         verticalArrangement = Arrangement.spacedBy(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         item { Spacer(Modifier.height(32.dp)); Icon(Icons.Default.Forum, null, Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary) }
         item { Text(if (register) "Создать аккаунт" else "Личный чат", style = MaterialTheme.typography.headlineLarge) }
-        item { Text("Переписка на вашем сервере", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        item { OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), label = { Text("Адрес сервера") },
-            placeholder = { Text("https://chat.example.com:8443") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)) }
+        item { Text("Общайтесь с теми, кто вам близок", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { OutlinedTextField(login, { login = it }, Modifier.fillMaxWidth(), label = { Text("Логин для входа") }, singleLine = true,
             supportingText = { if (register) Text("Приватный логин: 3–64 символа a-z, 0-9, _, -, .") }) }
         if (register) item { OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Публичный @username") },
@@ -176,9 +195,9 @@ private fun AuthenticationScreen(repo: MessengerRepository, s: ChatState) {
             visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             supportingText = { if (register) Text("От 12 символов, до 72 байт UTF-8") }) }
         item { Button(onClick = {
-            repo.authenticate(server, login, username, password, register)
+            repo.authenticate(BuildConfig.DEFAULT_SERVER, login, username, password, register)
             password = ""
-        }, enabled = !s.busy && server.isNotBlank() && login.isNotBlank() && password.isNotBlank() && (!register || username.isNotBlank()),
+        }, enabled = !s.busy && login.isNotBlank() && password.isNotBlank() && (!register || username.isNotBlank()),
             modifier = Modifier.fillMaxWidth().height(56.dp)) { Text(if (register) "Зарегистрироваться" else "Войти") } }
         item { TextButton(onClick = { register = !register }, enabled = !s.busy) {
             Text(if (register) "Уже есть аккаунт — войти" else "Создать аккаунт")
@@ -191,6 +210,7 @@ private fun AuthenticationScreen(repo: MessengerRepository, s: ChatState) {
 private fun RoomsScreen(repo: MessengerRepository, s: ChatState) {
     var adding by remember { mutableStateOf(false) }
     var username by remember { mutableStateOf("") }
+    var search by rememberSaveable { mutableStateOf("") }
     Box(Modifier.fillMaxSize()) {
         if (s.rooms.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Default.ChatBubbleOutline, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
@@ -198,13 +218,19 @@ private fun RoomsScreen(repo: MessengerRepository, s: ChatState) {
             Text("Найдите человека по @username", Modifier.padding(top = 8.dp))
         }
         LazyColumn(contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 100.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(s.rooms, key = { it.id }) { room ->
-                Card(onClick = { repo.openRoom(room.id) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            item {
+                OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth(), placeholder = { Text("Поиск чатов") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true, shape = RoundedCornerShape(28.dp))
+            }
+            items(s.rooms.filter { it.name.contains(search, ignoreCase = true) }, key = { it.id }) { room ->
+                Card(onClick = { repo.openRoom(room.id) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                     ListItem(headlineContent = { Text(room.name, fontWeight = FontWeight.SemiBold) },
                         supportingContent = { Text(if (room.invited) "Приглашение — нажмите, чтобы принять" else "Личная переписка") },
-                        leadingContent = { Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                            Icon(if (room.invited) Icons.Default.MarkChatUnread else Icons.Default.Person, null, Modifier.padding(16.dp))
-                        } })
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        leadingContent = { ProfileAvatar(repo, room.peerId, room.name, s.profileRevision, 56) },
+                        trailingContent = { Icon(if (room.invited) Icons.Default.MarkChatUnread else Icons.Default.ChevronRight, null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant) })
                 }
             }
         }
@@ -216,6 +242,32 @@ private fun RoomsScreen(repo: MessengerRepository, s: ChatState) {
         text = { OutlinedTextField(username, { username = it }, label = { Text("@username") }, singleLine = true) },
         confirmButton = { TextButton(onClick = { repo.findAndChat(username); adding = false }, enabled = username.isNotBlank() && !s.busy) { Text("Написать") } },
         dismissButton = { TextButton(onClick = { adding = false }) { Text("Отмена") } })
+}
+
+@Composable
+private fun ProfileAvatar(repo: MessengerRepository, user: String?, name: String, revision: Int, size: Int) {
+    val bitmap by produceState<android.graphics.Bitmap?>(null, user, revision) {
+        value = null
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val file = user?.let { repo.profilePhoto(it) } ?: return@runCatching null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.path, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+                BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+            }.getOrNull()
+        }
+    }
+    Surface(Modifier.size(size.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+        Box(contentAlignment = Alignment.Center) {
+            val image = bitmap
+            if (image != null) Image(image.asImageBitmap(), "Аватар", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            else Text(name.trim().take(1).uppercase().ifBlank { "?" },
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                style = if (size > 64) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.titleLarge)
+        }
+    }
 }
 
 @Composable
@@ -381,12 +433,61 @@ private fun MediaDialog(file: File, kind: String, close: () -> Unit) {
 
 @Composable
 private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
+    val appearance by repo.appearance.state.collectAsStateWithLifecycle()
+    var name by remember(s.userId, s.displayName) { mutableStateOf(s.displayName) }
+    var security by rememberSaveable { mutableStateOf(false) }
     var recoveryInput by remember { mutableStateOf("") }
     var logout by remember { mutableStateOf(false) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text(s.userId.orEmpty(), style = MaterialTheme.typography.titleLarge) }
-        item { Text(s.server, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        item { Text("Защита переписки", style = MaterialTheme.typography.titleMedium) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let(repo::setAvatar) }
+    val username = s.userId.orEmpty().substringBefore(':')
+    LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ProfileAvatar(repo, s.userId, s.displayName.ifBlank { username.removePrefix("@") }, s.profileRevision, 104)
+                    Text(s.displayName.ifBlank { "Мой профиль" }, style = MaterialTheme.typography.headlineSmall)
+                    Text(username, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    FilledTonalButton(onClick = { picker.launch("image/*") }, enabled = !s.busy) {
+                        Icon(Icons.Default.AddAPhoto, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp)); Text("Изменить фото")
+                    }
+                    if (s.avatarUrl != null) TextButton(onClick = repo::removeAvatar, enabled = !s.busy) { Text("Удалить фото") }
+                    Text("Фото и имя видны другим пользователям", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        item { OutlinedTextField(name, { if (it.length <= 64) name = it }, Modifier.fillMaxWidth(),
+            label = { Text("Отображаемое имя") }, singleLine = true, shape = RoundedCornerShape(16.dp)) }
+        item { Button(onClick = { repo.saveProfile(name) }, enabled = !s.busy && name.isNotBlank() && name.trim() != s.displayName,
+            modifier = Modifier.fillMaxWidth()) { Text("Сохранить имя") } }
+        item { Text("Оформление", style = MaterialTheme.typography.titleLarge) }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("system" to "Авто", "light" to "Светлая", "dark" to "Тёмная").forEach { (value, label) ->
+                    FilterChip(selected = appearance.theme == value, onClick = { repo.appearance.update(theme = value) }, label = { Text(label) })
+                }
+            }
+        }
+        item { Text("Цвет приложения", style = MaterialTheme.typography.titleMedium) }
+        item {
+            Column {
+                listOf(listOf("dynamic" to "Из обоев", "lavender" to "Лаванда"), listOf("ocean" to "Океан", "forest" to "Лес")).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { (value, label) -> FilterChip(selected = appearance.accent == value,
+                            onClick = { repo.appearance.update(accent = value) }, label = { Text(label) }) }
+                    }
+                }
+            }
+        }
+        item { HorizontalDivider() }
+        item { FilledTonalButton(onClick = { security = !security }, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.VerifiedUser, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
+            Text(if (security) "Скрыть настройки безопасности" else "Безопасность и восстановление")
+        } }
+        if (security) {
         item { Text(if (s.verified) "Это устройство подтверждено" else "Устройство требует подтверждения или восстановления ключей") }
         item { Text("Передавайте ключ восстановления только своим устройствам. Чтобы проверить собеседника, откройте чат и нажмите значок щита.") }
         item { Text("Восстановление: " + when (s.recovery) {
@@ -396,6 +497,7 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
         item { OutlinedTextField(recoveryInput, { recoveryInput = it }, Modifier.fillMaxWidth(), label = { Text("Существующий ключ восстановления") },
             visualTransformation = PasswordVisualTransformation(), maxLines = 4) }
         item { FilledTonalButton(onClick = { repo.recover(recoveryInput); recoveryInput = "" }, enabled = recoveryInput.isNotBlank() && !s.busy) { Text("Восстановить ключи") } }
+        }
         item { HorizontalDivider() }
         item { Text("Фото и видео до 50 МБ. Синхронизация работает, пока приложение запущено. Доставка уведомлений при закрытом приложении пока не подключена.") }
         item { OutlinedButton(onClick = { logout = true }) { Text("Выйти из аккаунта") } }
