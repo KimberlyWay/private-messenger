@@ -70,12 +70,12 @@ class MessengerRepository(private val context: Context) {
         response.put("homeserver", base)
         response.put("directory", UUID.randomUUID().toString())
         response.put("db_key", Vault.encode(ByteArray(32).also { SecureRandom().nextBytes(it) }))
-        connect(response)
+        connect(response, password)
         vault.save(response)
         if (register) client?.setDisplayName(username.trim().removePrefix("@"))
     }
 
-    private suspend fun connect(data: JSONObject) {
+    private suspend fun connect(data: JSONObject, password: String? = null) {
         closeActiveRoom()
         sync?.cancel()
         client?.close()
@@ -93,8 +93,17 @@ class MessengerRepository(private val context: Context) {
             .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED))
             .userAgent("PrivateMessenger/" + BuildConfig.VERSION_NAME)
             .build()
-        built.restoreSession(Session(data.getString("access_token"), null, data.getString("user_id"),
-            data.getString("device_id"), base, null, SlidingSyncVersion.NONE))
+        if (password != null) {
+            // The gateway authenticates the private login. Use native login for the real
+            // device so the SDK can bootstrap device keys and authenticated cross-signing.
+            Gateway.call(base, "/_matrix/client/v3/logout", JSONObject(), data.getString("access_token"))
+            built.login(data.getString("user_id"), password, "Private Messenger Android", null)
+            val session = built.session()
+            data.put("access_token", session.accessToken).put("device_id", session.deviceId).put("user_id", session.userId)
+        } else {
+            built.restoreSession(Session(data.getString("access_token"), null, data.getString("user_id"),
+                data.getString("device_id"), base, null, SlidingSyncVersion.NONE))
+        }
         client = built
         sessionData = data
         mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base) }

@@ -36,8 +36,10 @@ class EncryptionIntegrationTest {
             .roomKeyRecipientStrategy(CollectStrategy.IDENTITY_BASED_STRATEGY)
             .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED)).build()
         clients += c
-        c.restoreSession(Session(session.getString("access_token"), null, session.getString("user_id"),
-            session.getString("device_id"), base, null, SlidingSyncVersion.NONE))
+        Gateway.call(base, "/_matrix/client/v3/logout", JSONObject(), session.getString("access_token"))
+        c.login(session.getString("user_id"), password, "Encryption integration", null)
+        val native = c.session()
+        session.put("access_token", native.accessToken).put("device_id", native.deviceId)
         tasks += c.syncV2(SyncSettingsV2(), object : SyncListenerV2 { override fun onUpdate(response: SyncResponseV2) {} })
         android.util.Log.i("EncryptionTest", "Starting first sync: ${c.userId()}")
         withTimeout(30_000) { c.syncOnceV2(SyncSettingsV2(timeoutMs = 0u)) }
@@ -48,8 +50,10 @@ class EncryptionIntegrationTest {
         return c to session
     }
 
-    private suspend fun waitUntil(test: () -> Boolean) {
-        withTimeout(90_000) { while (!test()) delay(500) }
+    private suspend fun waitUntil(label: String, test: () -> Boolean) {
+        android.util.Log.i("EncryptionTest", label)
+        try { withTimeout(90_000) { while (!test()) delay(500) } }
+        catch (e: TimeoutCancellationException) { throw AssertionError("Timed out: $label", e) }
     }
 
     private fun changedItems(diffs: List<TimelineDiff>): List<TimelineItem> = diffs.flatMap {
@@ -78,7 +82,7 @@ class EncryptionIntegrationTest {
         try {
             val (alice, aliceSession) = client(aliceLogin, password)
             val (bob, bobSession) = client(bobLogin, password)
-            waitUntil { alice.encryption().verificationState() == VerificationState.VERIFIED && bob.encryption().verificationState() == VerificationState.VERIFIED }
+            waitUntil("initial devices cross-signed") { alice.encryption().verificationState() == VerificationState.VERIFIED && bob.encryption().verificationState() == VerificationState.VERIFIED }
             val recovery = alice.encryption().enableRecovery(true, null, object : EnableRecoveryProgressListener {
                 override fun onUpdate(status: EnableRecoveryProgress) {}
             })
@@ -86,9 +90,9 @@ class EncryptionIntegrationTest {
             val roomId = alice.createRoom(CreateRoomParameters(name = null, isEncrypted = true, isDirect = true,
                 visibility = RoomVisibility.Private, preset = RoomPreset.PRIVATE_CHAT, invite = listOf(bob.userId())))
             withTimeout(60_000) { alice.awaitRoomRemoteEcho(roomId) }
-            waitUntil { bob.getRoom(roomId)?.membership() == Membership.INVITED }
+            waitUntil("Bob receives invitation") { bob.getRoom(roomId)?.membership() == Membership.INVITED }
             bob.getRoom(roomId)!!.join()
-            waitUntil { bob.getRoom(roomId)?.membership() == Membership.JOINED }
+            waitUntil("Bob joins room") { bob.getRoom(roomId)?.membership() == Membership.JOINED }
             val aliceRoom = alice.getRoom(roomId)!!
             val bobRoom = bob.getRoom(roomId)!!
             assertTrue(aliceRoom.isEncrypted()); assertTrue(bobRoom.isEncrypted())
@@ -109,7 +113,7 @@ class EncryptionIntegrationTest {
             })
             val outgoing = aliceRoom.timeline()
             outgoing.send(messageEventContentNew(MessageType.Text(TextMessageContent(marker, null))))
-            waitUntil { received.get() != null }
+            waitUntil("Bob decrypts text") { received.get() != null }
             val eventId = (received.get()!!.eventOrTransactionId as EventOrTransactionId.EventId).eventId
             val raw = Gateway.call(base, "/_matrix/client/v3/rooms/${Gateway.escaped(roomId)}/event/${Gateway.escaped(eventId)}",
                 token = bobSession.getString("access_token"))
@@ -118,7 +122,7 @@ class EncryptionIntegrationTest {
             val bytes = android.util.Base64.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6fV0AAAAASUVORK5CYII=", android.util.Base64.DEFAULT)
             outgoing.sendAttachment(UploadParameters(UploadSource.Data(bytes, "test.png"), null, null, null, null),
                 AttachmentKind.Image(ImageInfo(1u, 1u, "image/png", bytes.size.toULong(), null, null, null, false), null)).join()
-            waitUntil { imageSource.get() != null }
+            waitUntil("Bob receives encrypted image") { imageSource.get() != null }
             val source = imageSource.get()!!
             assertTrue("Encrypted media contains its client-side key", source.toJson().contains("key"))
             assertArrayEquals(bytes, bob.getMediaContent(source))
@@ -134,8 +138,8 @@ class EncryptionIntegrationTest {
             alice.encryption().waitForBackupUploadSteadyState(null)
             val (restored, _) = client(aliceLogin, password)
             withTimeout(120_000) { restored.encryption().recover(recovery) }
-            waitUntil { restored.encryption().verificationState() == VerificationState.VERIFIED }
-            waitUntil { restored.getRoom(roomId) != null }
+            waitUntil("restored device verified") { restored.encryption().verificationState() == VerificationState.VERIFIED }
+            waitUntil("restored room available") { restored.getRoom(roomId) != null }
             val recoveredText = AtomicReference<String?>()
             val history = restored.getRoom(roomId)!!.timeline()
             tasks += history.addListener(object : TimelineListener {
@@ -147,7 +151,7 @@ class EncryptionIntegrationTest {
                 }
             })
             history.paginateBackwards(30u)
-            waitUntil { recoveredText.get() == marker }
+            waitUntil("restored device decrypts history") { recoveredText.get() == marker }
             assertEquals(marker, recoveredText.get())
         } finally {
             tasks.forEach { runCatching { it.cancel() } }

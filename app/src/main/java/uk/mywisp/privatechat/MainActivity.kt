@@ -135,7 +135,9 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
                 Text("Он нужен для истории на новом устройстве. Сервер не сможет восстановить его за вас. Сохраните ключ в менеджере паролей.")
                 Text(key, fontWeight = FontWeight.Bold)
             } }, dismissButton = { TextButton(onClick = {
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Ключ восстановления", key))
+                val clip = ClipData.newPlainText("Ключ восстановления", key)
+                clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
             }) { Text("Скопировать") } }, confirmButton = { TextButton(onClick = repo::hideRecovery) { Text("Я сохранил ключ") } })
     }
     s.verification?.let { prompt -> AlertDialog(onDismissRequest = repo::cancelVerification,
@@ -219,7 +221,7 @@ private fun RoomsScreen(repo: MessengerRepository, s: ChatState) {
 @Composable
 private fun ConversationScreen(repo: MessengerRepository, s: ChatState) {
     val context = LocalContext.current
-    var text by rememberSaveable(s.roomId) { mutableStateOf("") }
+    var text by remember(s.roomId) { mutableStateOf("") }
     var recording by remember { mutableStateOf(false) }
     var seconds by remember { mutableIntStateOf(0) }
     val voice = remember { VoiceRecorder(context) }
