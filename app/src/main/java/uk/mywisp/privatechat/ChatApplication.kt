@@ -10,7 +10,7 @@ class ChatApplication : Application() {
         private set
     override fun onCreate() {
         super.onCreate()
-        initPlatform(TracingConfiguration(LogLevel.ERROR, emptyList(), emptyList(), false, null, null), false)
+        initPlatform(TracingConfiguration(LogLevel.ERROR, emptyList(), emptyList(), BuildConfig.ALLOW_TEST_HTTP, null, null), false)
         repository = MessengerRepository(this)
     }
 }

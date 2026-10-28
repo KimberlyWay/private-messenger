@@ -235,6 +235,7 @@ class MessengerRepository(private val context: Context) {
         val extension = if (mime.startsWith("image/")) "jpg" else "mp4"
         val directory = File(context.cacheDir, "uploads").apply { mkdirs() }
         val file = File(directory, "media_${UUID.randomUUID()}.$extension")
+        try {
         context.contentResolver.openInputStream(uri)?.use { input ->
             file.outputStream().use { output ->
                 val buffer = ByteArray(64 * 1024); var total = 0L
@@ -245,6 +246,7 @@ class MessengerRepository(private val context: Context) {
                 }
             }
         } ?: error("Файл недоступен")
+        } catch (e: Exception) { file.delete(); throw e }
         sendFileInternal(file, if (mime.startsWith("image/")) "image" else "video", mime, 0)
     }
 
