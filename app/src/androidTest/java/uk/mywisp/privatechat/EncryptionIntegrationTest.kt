@@ -214,6 +214,7 @@ class EncryptionIntegrationTest {
                     }
                 }
             })
+            history.fetchMembers()
             history.paginateBackwards(30u)
             waitUntil("restored device decrypts history") { recoveredText.get() == marker }
             assertEquals(marker, recoveredText.get())

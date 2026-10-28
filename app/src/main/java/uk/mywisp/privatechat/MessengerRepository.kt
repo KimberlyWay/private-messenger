@@ -170,6 +170,7 @@ class MessengerRepository(private val context: Context) {
                 }
             }
         })
+        currentTimeline.fetchMembers()
         currentTimeline.paginateBackwards(30u)
     }
 
