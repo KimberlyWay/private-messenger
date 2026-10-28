@@ -8,6 +8,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import org.matrix.rustcomponents.sdk.*
 import uniffi.matrix_sdk_crypto.CollectStrategy
@@ -34,6 +36,7 @@ data class ChatState(
 class MessengerRepository(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val vault = Vault(context)
+    private val actionMutex = Mutex()
     private val mutable = MutableStateFlow(ChatState())
     val state = mutable.asStateFlow()
     private var client: Client? = null
@@ -50,14 +53,16 @@ class MessengerRepository(private val context: Context) {
 
     private fun action(block: suspend () -> Unit) {
         scope.launch {
-            mutable.update { it.copy(busy = true, error = null) }
-            try { block() }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                val message = if (e is IllegalArgumentException || e is IllegalStateException) e.message
-                    else "Не удалось выполнить действие. Проверьте подключение к серверу и настройки шифрования."
-                mutable.update { it.copy(error = message?.take(240)) }
-            } finally { mutable.update { it.copy(busy = false) } }
+            actionMutex.withLock {
+                mutable.update { it.copy(busy = true, error = null) }
+                try { block() }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    val message = if (e is IllegalArgumentException || e is IllegalStateException) e.message
+                        else "Не удалось выполнить действие. Проверьте подключение к серверу и настройки шифрования."
+                    mutable.update { it.copy(error = message?.take(240)) }
+                } finally { mutable.update { it.copy(busy = false) } }
+            }
         }
     }
 
@@ -78,6 +83,7 @@ class MessengerRepository(private val context: Context) {
     private suspend fun connect(data: JSONObject, password: String? = null) {
         closeActiveRoom()
         sync?.cancel()
+        verificationController?.setDelegate(null); verificationController?.close(); verificationController = null
         client?.close()
         val base = Gateway.validateBase(data.getString("homeserver"))
         val directory = File(context.filesDir, "matrix/" + data.getString("directory")).apply { mkdirs() }
@@ -112,10 +118,18 @@ class MessengerRepository(private val context: Context) {
                 scope.launch { runCatching { refreshRooms(); refreshSecurity() } }
             }
         })
-        verificationController = built.getSessionVerificationController().also { it.setDelegate(verificationDelegate) }
         withTimeoutOrNull(30_000) { built.encryption().waitForE2eeInitializationTasks() }
+        setupVerificationController()
         refreshRooms()
         refreshSecurity()
+    }
+
+    private suspend fun setupVerificationController() {
+        if (verificationController != null) return
+        val current = client ?: return
+        if (current.encryption().userIdentity(current.userId(), false) != null) {
+            verificationController = current.getSessionVerificationController().also { it.setDelegate(verificationDelegate) }
+        }
     }
 
     private fun refreshRooms() {
@@ -309,6 +323,7 @@ class MessengerRepository(private val context: Context) {
     }
     fun refresh() = action {
         client?.enableAllSendQueues(true)
+        setupVerificationController()
         timeline?.fetchMembers()
         retryEncryptedEvents()
         refreshRooms(); refreshSecurity()
@@ -326,7 +341,7 @@ class MessengerRepository(private val context: Context) {
     fun hideRecovery() { mutable.update { it.copy(recoveryKey = null) } }
     fun recover(key: String) = action {
         requireNotNull(client).encryption().recover(key.trim())
-        timeline?.fetchMembers(); retryEncryptedEvents(); refreshSecurity()
+        setupVerificationController(); timeline?.fetchMembers(); retryEncryptedEvents(); refreshSecurity()
     }
     fun logout() = action {
         val c = client ?: return@action
@@ -340,7 +355,7 @@ class MessengerRepository(private val context: Context) {
     fun requestVerification() = action {
         val peer = requireNotNull(state.value.peerId) { "Собеседник ещё не присоединился" }
         verificationPeer = peer
-        verificationController?.requestUserVerification(peer)
+        requireNotNull(verificationController) { "Ключи ещё настраиваются. Обновите состояние или восстановите ключи в настройках." }.requestUserVerification(peer)
         mutable.update { it.copy(verification = VerificationPrompt("waiting", "Проверка собеседника", "Ожидаем подтверждения на втором устройстве…")) }
     }
     fun acceptVerification() = action {

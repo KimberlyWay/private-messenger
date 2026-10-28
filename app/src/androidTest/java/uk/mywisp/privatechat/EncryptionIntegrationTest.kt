@@ -33,7 +33,9 @@ class EncryptionIntegrationTest {
             .sqliteStore(SqliteStoreBuilder(root.path, root.path).key(ByteArray(32).also { SecureRandom().nextBytes(it) }))
             .slidingSyncVersionBuilder(SlidingSyncVersionBuilder.NONE)
             .autoEnableCrossSigning(crossSign).autoEnableBackups(crossSign)
-            .roomKeyRecipientStrategy(CollectStrategy.IDENTITY_BASED_STRATEGY)
+            // ALL_DEVICES is used only by the deliberately insecure adversarial test
+            // client. The application and normal test clients always use identity-based sharing.
+            .roomKeyRecipientStrategy(if (crossSign) CollectStrategy.IDENTITY_BASED_STRATEGY else CollectStrategy.ALL_DEVICES)
             .decryptionSettings(DecryptionSettings(TrustRequirement.CROSS_SIGNED_OR_LEGACY)).build()
         clients += c
         Gateway.call(base, "/_matrix/client/v3/logout", JSONObject(), session.getString("access_token"))
