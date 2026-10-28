@@ -39,7 +39,12 @@ class EncryptionIntegrationTest {
         c.restoreSession(Session(session.getString("access_token"), null, session.getString("user_id"),
             session.getString("device_id"), base, null, SlidingSyncVersion.NONE))
         tasks += c.syncV2(SyncSettingsV2(), object : SyncListenerV2 { override fun onUpdate(response: SyncResponseV2) {} })
-        withTimeout(90_000) { c.encryption().waitForE2eeInitializationTasks() }
+        android.util.Log.i("EncryptionTest", "Starting first sync: ${c.userId()}")
+        withTimeout(30_000) { c.syncOnceV2(SyncSettingsV2(timeoutMs = 0u)) }
+        android.util.Log.i("EncryptionTest", "First sync done; waiting for crypto initialization")
+        try { withTimeout(60_000) { c.encryption().waitForE2eeInitializationTasks() } }
+        catch (e: TimeoutCancellationException) { throw AssertionError("Crypto initialization timed out for ${c.userId()}; verification=${c.encryption().verificationState()}", e) }
+        android.util.Log.i("EncryptionTest", "Crypto initialized: ${c.encryption().verificationState()}")
         return c to session
     }
 

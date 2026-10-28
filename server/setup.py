@@ -12,8 +12,10 @@ ROOT = Path(__file__).resolve().parent
 
 
 def configure(domain, url, test=False, port=8088):
-    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", domain) or "." not in domain:
+    if len(domain) > 253 or "." not in domain or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in domain.split(".")):
         raise ValueError("Use a lowercase DNS server name without a port")
+    if not 1 <= port <= 65535:
+        raise ValueError("Port must be between 1 and 65535")
     parsed = urlsplit(url)
     if parsed.scheme != ("http" if test else "https") or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise ValueError("Use a base HTTPS URL, optionally with a port")

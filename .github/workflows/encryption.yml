@@ -33,13 +33,17 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          script: ./gradlew --no-daemon connectedE2eAndroidTest
+          script: |
+            adb logcat -c
+            ./gradlew --no-daemon connectedE2eAndroidTest || { adb logcat -d -v time > android-test-logcat.txt; exit 1; }
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: encryption-test-reports
-          path: app/build/reports/androidTests
+          path: |
+            app/build/reports/androidTests
+            android-test-logcat.txt
           retention-days: 14
       - name: Stop isolated test services
         if: always()

@@ -48,16 +48,6 @@ class MessengerRepository(private val context: Context) {
     private val items = mutableListOf<TimelineItem>()
     private val itemLock = Any()
 
-    init {
-        scope.launch {
-            try {
-                vault.load()?.let { connect(it) }
-            } catch (_: Exception) {
-                mutable.update { it.copy(error = "Не удалось восстановить сеанс. Войдите снова; для истории потребуется ключ восстановления.") }
-            } finally { mutable.update { it.copy(loading = false) } }
-        }
-    }
-
     private fun action(block: suspend () -> Unit) {
         scope.launch {
             mutable.update { it.copy(busy = true, error = null) }
@@ -351,6 +341,16 @@ class MessengerRepository(private val context: Context) {
         override fun didFinish() {
             mutable.update { it.copy(verification = VerificationPrompt("done", "Проверка завершена", "Криптографическая проверка устройств выполнена.")) }
             refreshSecurity()
+        }
+    }
+
+    init {
+        scope.launch {
+            try {
+                vault.load()?.let { connect(it) }
+            } catch (_: Exception) {
+                mutable.update { it.copy(error = "Не удалось восстановить сеанс. Войдите снова; для истории потребуется ключ восстановления.") }
+            } finally { mutable.update { it.copy(loading = false) } }
         }
     }
 

@@ -244,7 +244,14 @@ private fun ConversationScreen(repo: MessengerRepository, s: ChatState) {
     val cameraPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         if (permissions.values.all { it }) camera.launch(Intent(context, CircleCaptureActivity::class.java))
     }
-    DisposableEffect(Unit) { onDispose { voice.cancel() } }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) { voice.cancel(); recording = false }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); voice.cancel() }
+    }
     LaunchedEffect(recording) { while (recording) { delay(1000); seconds++ } }
     val list = rememberLazyListState()
     LaunchedEffect(s.messages.lastOrNull()?.id) { if (s.messages.isNotEmpty()) list.animateScrollToItem(s.messages.size) }
