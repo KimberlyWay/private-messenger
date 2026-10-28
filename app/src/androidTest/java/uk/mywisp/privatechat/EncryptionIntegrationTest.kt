@@ -68,6 +68,60 @@ class EncryptionIntegrationTest {
         }
     }
 
+    private fun verificationData(data: SessionVerificationData): String = when (data) {
+        is SessionVerificationData.Emojis -> data.emojis.joinToString("|") { it.symbol() }
+        is SessionVerificationData.Decimals -> data.values.joinToString("|")
+    }
+
+    private suspend fun verifyPeers(alice: Client, bob: Client) = coroutineScope {
+        val request = CompletableDeferred<SessionVerificationRequestDetails>()
+        val leftData = CompletableDeferred<String>()
+        val rightData = CompletableDeferred<String>()
+        val leftDone = CompletableDeferred<Unit>()
+        val rightDone = CompletableDeferred<Unit>()
+        val left = alice.getSessionVerificationController()
+        val right = bob.getSessionVerificationController()
+        fun delegate(isLeft: Boolean) = object : SessionVerificationControllerDelegate {
+            override fun didReceiveVerificationRequest(details: SessionVerificationRequestDetails) { request.complete(details) }
+            override fun didAcceptVerificationRequest() {
+                if (isLeft) launch { runCatching { left.startSasVerification() }.onFailure { leftData.completeExceptionally(it) } }
+            }
+            override fun didStartSasVerification() {}
+            override fun didReceiveVerificationData(data: SessionVerificationData) {
+                (if (isLeft) leftData else rightData).complete(verificationData(data))
+            }
+            override fun didFinish() { (if (isLeft) leftDone else rightDone).complete(Unit) }
+            override fun didFail() { failure("SAS failed") }
+            override fun didCancel() { failure("SAS cancelled") }
+            private fun failure(reason: String) {
+                val error = AssertionError(reason)
+                listOf(leftData, rightData).forEach { it.completeExceptionally(error) }
+                listOf(leftDone, rightDone).forEach { it.completeExceptionally(error) }
+                request.completeExceptionally(error)
+            }
+        }
+        left.setDelegate(delegate(true)); right.setDelegate(delegate(false))
+        try {
+            withTimeout(90_000) {
+                left.requestUserVerification(bob.userId())
+                val details = request.await()
+                assertEquals(alice.userId(), details.senderProfile.userId)
+                right.acknowledgeVerificationRequest(details.senderProfile.userId, details.flowId)
+                right.acceptVerificationRequest()
+                // Test-only approval after an exact comparison on both endpoints.
+                // The application requires a human comparison via an independent channel.
+                assertEquals(leftData.await(), rightData.await())
+                left.approveVerification(); right.approveVerification()
+                leftDone.await(); rightDone.await()
+            }
+            assertTrue(alice.encryption().userIdentity(bob.userId(), true)!!.isVerified())
+            assertTrue(bob.encryption().userIdentity(alice.userId(), true)!!.isVerified())
+        } finally {
+            left.setDelegate(null); right.setDelegate(null)
+            left.close(); right.close()
+        }
+    }
+
     @Test
     fun messagesAndFilesAreCiphertextOnServerAndRecoverOnNewDevice() = runBlocking(Dispatchers.IO) {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
@@ -96,6 +150,8 @@ class EncryptionIntegrationTest {
             val aliceRoom = alice.getRoom(roomId)!!
             val bobRoom = bob.getRoom(roomId)!!
             assertTrue(aliceRoom.isEncrypted()); assertTrue(bobRoom.isEncrypted())
+            android.util.Log.i("EncryptionTest", "Comparing SAS on both endpoints")
+            verifyPeers(alice, bob)
             val received = AtomicReference<EventTimelineItem?>()
             val imageSource = AtomicReference<MediaSource?>()
             val marker = "end-to-end-secret-" + UUID.randomUUID()
