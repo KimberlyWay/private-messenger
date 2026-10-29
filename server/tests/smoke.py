@@ -85,3 +85,26 @@ assert call("/api/chats", {"username": carol_name, "candidate_room_ids": [old]},
 other = call("/api/chats", {"username": carol_name, "candidate_room_ids": [room_id]}, token=bob_session["access_token"])["room_id"]
 assert other not in (old, room_id), "An unrelated room must never be adopted"
 print("PASS: concurrent canonical DMs, encrypted room state, invite permissions, legacy adoption and pair validation")
+
+# Current clients derive separate authentication and recovery secrets on the phone.
+import base64
+import hashlib
+import hmac
+
+def derived(password, salt_text, name):
+    raw = base64.urlsafe_b64decode(salt_text + "=")
+    salt = hashlib.sha256(raw + ("PrivateMessenger/password-v2\n" + "ci.invalid" + "\n" + name).encode()).digest()
+    master = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600000, 32)
+    return "pm2_" + base64.urlsafe_b64encode(hmac.digest(master, b"PrivateMessenger/authentication/v2", "sha256")).decode().rstrip("=")
+
+new_salt = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+new_password = "New-" + uuid.uuid4().hex
+new_auth = derived(new_password, new_salt, login)
+call("/api/auth/upgrade", {"old_password": password, "new_auth_secret": new_auth, "salt": new_salt}, token=session["access_token"])
+params = call("/api/auth/parameters", {"login": login})
+assert params["scheme"] == "pm-password-v2" and new_salt in params["salts"]
+modern = call("/api/login", {"login": login, "password": new_auth, "credential_version": 2, "credential_salt": new_salt})
+assert modern["user_id"] == session["user_id"]
+assert call("/api/auth/account", token=modern["access_token"])["credential_version"] == 2
+call("/api/login", {"login": login, "password": password}, expected=401)
+print("PASS: legacy credential migration, password-derived login and no automatic raw-password downgrade")

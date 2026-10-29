@@ -13,5 +13,11 @@ class ChatApplication : Application() {
         org.matrix.rustsdk.Android.init(this)
         initPlatform(TracingConfiguration(LogLevel.ERROR, emptyList(), emptyList(), BuildConfig.ALLOW_TEST_HTTP, null, null), false)
         repository = MessengerRepository(this)
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            repository.diagnostics.record("ERROR", "UNCAUGHT_CRASH", error = error, immediate = true)
+            previous?.uncaughtException(thread, error)
+        }
+        repository.diagnostics.record("INFO", "APP_START", "version=${BuildConfig.VERSION_NAME}")
     }
 }

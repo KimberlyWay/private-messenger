@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 import hashlib
@@ -38,6 +39,9 @@ async def lifespan(app):
         await connection.execute("""CREATE TABLE IF NOT EXISTS direct_chats (
             user_low TEXT NOT NULL, user_high TEXT NOT NULL, room_id TEXT,
             PRIMARY KEY(user_low, user_high), CHECK(user_low < user_high))""")
+        await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credential_version INTEGER NOT NULL DEFAULT 1")
+        await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credential_salt TEXT")
+        await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pending_salt TEXT")
     yield
     await http.aclose()
     await pool.close()
@@ -49,6 +53,8 @@ app = FastAPI(title="Private Messenger accounts", lifespan=lifespan, docs_url=No
 class Credentials(BaseModel):
     login: str
     password: SecretStr
+    credential_version: int = 1
+    credential_salt: str | None = None
 
 
 class Registration(Credentials):
@@ -125,13 +131,17 @@ async def register(body: Registration, request: Request):
     login = normalize(body.login, LOGIN_RE)
     username = normalize(body.username.removeprefix("@"), USERNAME_RE)
     password = password_value(body.password)
+    if body.credential_version not in (1, 2):
+        raise HTTPException(400, "Неизвестная версия авторизации")
+    if body.credential_version == 2:
+        validate_derived(password, body.credential_salt)
     matrix_id = f"@{username}:{SERVER_NAME}"
     try:
         async with pool.connection() as connection:
             async with connection.transaction():
                 # Reserve both unique names before creating the Matrix account.
-                await connection.execute("INSERT INTO accounts(login, username, matrix_id) VALUES (%s,%s,%s)",
-                                         (login, username, matrix_id))
+                await connection.execute("INSERT INTO accounts(login, username, matrix_id, credential_version, credential_salt) VALUES (%s,%s,%s,%s,%s)",
+                                         (login, username, matrix_id, body.credential_version, body.credential_salt))
                 nonce_response = await http.get("/_synapse/admin/v1/register")
                 nonce_response.raise_for_status()
                 nonce = nonce_response.json()["nonce"]
@@ -159,12 +169,25 @@ async def login(body: Credentials, request: Request):
     if not password or len(password.encode("utf-8")) > 128:
         raise HTTPException(401, "Неверный логин или пароль")
     async with pool.connection() as connection:
-        row = await (await connection.execute("SELECT username FROM accounts WHERE login=%s", (key,))).fetchone()
+        row = await (await connection.execute("SELECT username,credential_version,credential_salt,pending_salt FROM accounts WHERE login=%s", (key,))).fetchone()
     if row is None:
         # Avoid an immediate timing oracle for private login names.
         await asyncio.sleep(0.3)
         raise HTTPException(401, "Неверный логин или пароль")
-    return await matrix_login(row[0], password)
+    if body.credential_version == 2:
+        validate_derived(password, body.credential_salt)
+        if body.credential_salt not in (row[2], row[3]):
+            raise HTTPException(401, "Неверный логин или пароль")
+    elif row[1] == 2:
+        raise HTTPException(401, "Для этого аккаунта нужен актуальный клиент")
+    result = await matrix_login(row[0], password)
+    if body.credential_version == 2:
+        async with pool.connection() as connection:
+            await connection.execute("UPDATE accounts SET credential_version=2,credential_salt=%s,pending_salt=NULL WHERE login=%s AND (credential_salt=%s OR pending_salt=%s)",
+                                     (body.credential_salt, key, body.credential_salt, body.credential_salt))
+    result["credential_version"] = body.credential_version
+    result["server_name"] = SERVER_NAME
+    return result
 
 
 @app.get("/api/users/{username}")
@@ -278,3 +301,83 @@ async def direct_chat(body: DirectChatRequest, request: Request):
                 return {"room_id": room_id, "user_id": peer}
     except httpx.HTTPError:
         raise HTTPException(503, "Не удалось открыть личный чат. Попробуйте ещё раз; новый чат не будет создан повторно") from None
+
+
+# v2 clients never send their human password. Synapse authenticates a domain-separated
+# derived secret, which cannot be used as the key for the encrypted recovery envelope.
+def validate_derived(secret, salt):
+    if not re.fullmatch(r"pm2_[A-Za-z0-9_-]{43}", secret) or not isinstance(salt, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", salt):
+        raise HTTPException(400, "Некорректные параметры защищённого входа")
+
+
+class AuthParameters(BaseModel):
+    login: str
+
+
+@app.post("/api/auth/parameters")
+async def auth_parameters(body: AuthParameters, request: Request):
+    await rate_limit(request, "auth_parameters", 60)
+    login = normalize(body.login, LOGIN_RE)
+    async with pool.connection() as connection:
+        row = await (await connection.execute("SELECT credential_salt,pending_salt FROM accounts WHERE login=%s", (login,))).fetchone()
+    # Unknown/legacy accounts get a stable fake salt rather than a raw-password downgrade.
+    fake = base64.urlsafe_b64encode(hmac.new(SECRET.encode(), ("auth-parameters\0" + login).encode(), hashlib.sha256).digest()).decode().rstrip("=")
+    salts = [row[0] if row and row[0] else fake]
+    if row and row[1] and row[1] not in salts:
+        salts.append(row[1])
+    return {"scheme": "pm-password-v2", "server_name": SERVER_NAME, "salts": salts}
+
+
+class UpgradeCredentials(BaseModel):
+    old_password: SecretStr
+    new_auth_secret: SecretStr
+    salt: str
+
+
+@app.post("/api/auth/upgrade")
+async def upgrade_credentials(body: UpgradeCredentials, request: Request):
+    await rate_limit(request, "upgrade", 10)
+    own, headers = await authenticated_user(request)
+    new_auth = body.new_auth_secret.get_secret_value()
+    validate_derived(new_auth, body.salt)
+    old_password = body.old_password.get_secret_value()
+    if not old_password or len(old_password.encode()) > 128:
+        raise HTTPException(400, "Проверьте текущий пароль")
+    lock_key = int.from_bytes(hashlib.sha256(("upgrade:" + own).encode()).digest()[:8], "big", signed=True)
+    try:
+        async with pool.connection() as connection:
+            await connection.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+            await connection.commit()
+            try:
+                row = await (await connection.execute("SELECT credential_version FROM accounts WHERE matrix_id=%s", (own,))).fetchone()
+                if not row:
+                    raise HTTPException(404, "Аккаунт не найден")
+                if row[0] == 2:
+                    raise HTTPException(409, "Защищённый вход уже настроен")
+                # Commit the pending salt BEFORE changing the Synapse password.
+                # A login can finish this migration if the process dies afterwards.
+                await connection.execute("UPDATE accounts SET pending_salt=%s WHERE matrix_id=%s", (body.salt, own))
+                await connection.commit()
+                response = await http.post("/_matrix/client/v3/account/password", headers=headers, json={
+                    "new_password": new_auth, "logout_devices": False,
+                    "auth": {"type": "m.login.password", "identifier": {"type": "m.id.user", "user": own}, "password": old_password}})
+                if response.status_code != 200:
+                    raise HTTPException(401, "Не удалось подтвердить текущий пароль")
+                await connection.execute("UPDATE accounts SET credential_version=2,credential_salt=%s,pending_salt=NULL WHERE matrix_id=%s", (body.salt, own))
+                await connection.commit()
+            finally:
+                await connection.rollback()
+                await connection.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
+                await connection.commit()
+        return {"credential_version": 2, "server_name": SERVER_NAME}
+    except httpx.HTTPError:
+        raise HTTPException(503, "Перенос не завершён. Повторите вход новым паролем или завершите настройку на этом телефоне") from None
+
+@app.get("/api/auth/account")
+async def own_auth_account(request: Request):
+    own, _ = await authenticated_user(request)
+    async with pool.connection() as connection:
+        row = await (await connection.execute("SELECT login,credential_version,credential_salt FROM accounts WHERE matrix_id=%s", (own,))).fetchone()
+    if not row:
+        raise HTTPException(404, "Аккаунт не найден")
+    return {"login": row[0], "credential_version": row[1], "salt": row[2], "server_name": SERVER_NAME}

@@ -70,19 +70,36 @@ class ConversationFlowTest {
             noError(alice, bob); assertNull(bob.state.value.sendError)
             assertEquals(listOf(id), alice.state.value.rooms.map { it.id })
             assertEquals(listOf(id), bob.state.value.rooms.map { it.id })
-            // A second native login is not proof that this new device has recovered its keys.
+            until("Both sides back up their keys before reinstall") { alice.state.value.backupStatus == "ready" && bob.state.value.backupStatus == "ready" }
+            // A fresh native login must recover keys using the human password, not a manually copied key.
             bob.logout()
             until("Bob logs out") { bob.state.value.userId == null && !bob.state.value.busy }
             bob.authenticate(BuildConfig.DEFAULT_SERVER, "private_" + bobName, "", password, false)
             until("New Bob device signs in") { bob.state.value.userId != null && !bob.state.value.busy }
             noError(bob)
-            assertFalse("Re-login must not silently reset the identity", bob.state.value.verified)
+            assertTrue("Password recovery must verify the new device without resetting the identity", bob.state.value.verified)
+            assertTrue(bob.state.value.managedRecovery)
             bob.findAndChat(aliceName)
             until("Re-login reuses the canonical room") { bob.state.value.roomId == id && !bob.state.value.busy }
-            bob.sendText("must-not-stay-sending")
-            until("Unverified device has an actionable failure") { bob.state.value.error != null }
-            assertTrue(bob.state.value.error!!.contains("устройство"))
-            assertFalse(bob.state.value.messages.any { it.text == "must-not-stay-sending" })
+            until("History decrypts on a fresh device") { bob.state.value.messages.any { it.text == text } && bob.state.value.messages.any { it.text == reply } }
+            val fresh = "fresh-device-" + UUID.randomUUID()
+            bob.sendText(fresh)
+            until("The restored device can send") { alice.state.value.messages.any { it.text == fresh } || bob.state.value.error != null || bob.state.value.sendError != null }
+            noError(alice, bob); assertNull(bob.state.value.sendError)
+            assertFalse(bob.diagnostics.export().contains(password))
+            assertFalse(bob.diagnostics.export().contains(fresh))
+            val token = requireNotNull(Vault(rightContext).load()).getString("access_token")
+            assertFalse(bob.diagnostics.export().contains(token))
+            bob.deleteCurrentChat()
+            until("Delete removes the chat from the account list") { bob.state.value.roomId == null && bob.state.value.rooms.isEmpty() && !bob.state.value.busy }
+            noError(bob)
+            val afterDelete = "after-delete-" + UUID.randomUUID()
+            alice.sendText(afterDelete)
+            until("A new incoming message restores the same chat") { bob.state.value.rooms.any { it.id == id } }
+            bob.findAndChat(aliceName)
+            until("Open restored chat") { bob.state.value.roomId == id && !bob.state.value.busy }
+            until("New message appears") { bob.state.value.messages.any { it.text == afterDelete } }
+            assertFalse("Deleted history remains hidden", bob.state.value.messages.any { it.text == text || it.text == reply })
         } finally {
             alice.logout(); bob.logout()
             until("Test accounts close") { alice.state.value.userId == null && bob.state.value.userId == null && !alice.state.value.busy && !bob.state.value.busy }

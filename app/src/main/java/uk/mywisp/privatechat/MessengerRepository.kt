@@ -34,9 +34,10 @@ data class ChatState(
     val verification: VerificationPrompt? = null,
     val displayName: String = "", val avatarUrl: String? = null, val profileRevision: Int = 0,
     val cryptoReady: Boolean = false, val sendError: String? = null, val canRetrySend: Boolean = false,
-    val alternateRoomIds: List<String> = emptyList(), val historical: Boolean = false)
+    val alternateRoomIds: List<String> = emptyList(), val historical: Boolean = false, val managedRecovery: Boolean = false, val backupStatus: String = "not_configured")
 
 class MessengerRepository(private val context: Context) {
+    internal val diagnostics = DiagnosticJournal(context)
     val appearance = AppearancePreferences(context)
     private val profiles = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, UserProfile>>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -49,6 +50,10 @@ class MessengerRepository(private val context: Context) {
     private val queueFailures = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile private var allRooms = emptyList<ChatRoom>()
     private var queueListener: TaskHandle? = null
+    private var backupJob: Job? = null
+    private var visibilityJob: Job? = null
+    private val visibility = java.util.concurrent.ConcurrentHashMap<String, ChatVisibility>()
+    private val visibilityChecks = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val mutable = MutableStateFlow(ChatState())
     val state = mutable.asStateFlow()
     private var client: Client? = null
@@ -63,13 +68,19 @@ class MessengerRepository(private val context: Context) {
     private val items = mutableListOf<TimelineItem>()
     private val itemLock = Any()
 
-    private fun action(block: suspend () -> Unit) {
+    private fun action(name: String, block: suspend () -> Unit) {
         scope.launch {
             actionMutex.withLock {
                 mutable.update { it.copy(busy = true, error = null) }
-                try { block() }
-                catch (e: CancellationException) { throw e }
+                diagnostics.record("INFO", "ACTION_START", name)
+                try { block(); diagnostics.record("INFO", "ACTION_OK", name) }
+                catch (e: CancellationException) {
+                    if (e !is TimeoutCancellationException) throw e
+                    diagnostics.record("ERROR", "ACTION_TIMEOUT", name, e)
+                    mutable.update { it.copy(error = "Операция заняла слишком много времени. Проверьте соединение и повторите попытку.") }
+                }
                 catch (e: Exception) {
+                    diagnostics.record("ERROR", "ACTION_FAILED", name + (if (e is GatewayHttpException) " HTTP ${e.status}" else ""), e)
                     val message = if (e is IllegalArgumentException || e is IllegalStateException) e.message
                         else "Не удалось выполнить действие. Проверьте подключение к серверу и настройки шифрования."
                     mutable.update { it.copy(error = message?.take(240)) }
@@ -78,19 +89,169 @@ class MessengerRepository(private val context: Context) {
         }
     }
 
-    fun authenticate(server: String, login: String, username: String, password: String, register: Boolean) = action {
+    fun authenticate(server: String, login: String, username: String, password: String, register: Boolean) = action("authenticate") {
         val base = Gateway.validateBase(server)
-        if (register) Gateway.call(base, "/api/register", JSONObject()
-            .put("login", login).put("username", username).put("password", password))
+        val cleanLogin = login.trim().lowercase(java.util.Locale.ROOT)
+        val config = Gateway.call(base, "/api/auth/parameters", JSONObject().put("login", cleanLogin))
+        require(config.getString("scheme") == "pm-password-v2") { "Обновите сервер мессенджера" }
+        val serverName = config.getString("server_name")
+        if (register) PasswordRecovery.validatePassword(password)
+        val salts = if (register) listOf(PasswordSecrets.randomSalt()) else config.getJSONArray("salts").let { a ->
+            require(a.length() in 1..2) { "Некорректные параметры входа" }; (0 until a.length()).map(a::getString)
+        }
+        var authenticated = false
+        for (salt in salts) {
+            PasswordSecrets(password, salt, serverName, cleanLogin).use { secrets ->
+                val body = JSONObject().put("login", cleanLogin).put("password", secrets.authentication)
+                    .put("credential_version", 2).put("credential_salt", salt)
+                if (register) Gateway.call(base, "/api/register", body.put("username", username))
+                val response = try { Gateway.call(base, "/api/login", body) }
+                catch (e: GatewayHttpException) { if (e.status == 401 && !register) return@use else throw e }
+                response.put("homeserver", base).put("directory", UUID.randomUUID().toString())
+                    .put("db_key", Vault.encode(ByteArray(32).also { SecureRandom().nextBytes(it) }))
+                    .put("login", cleanLogin).put("credential_version", 2).put("credential_salt", salt).put("server_name", serverName)
+                connect(response, secrets.authentication)
+                if (register) client?.setDisplayName(username.trim().removePrefix("@"))
+                val user = requireNotNull(client).userId()
+                val envelope = PasswordRecovery.get(base, response.getString("access_token"), user)
+                if (envelope != null) {
+                    val key = try { PasswordRecovery.open(secrets, envelope, serverName, user) }
+                    catch (e: Exception) { diagnostics.record("ERROR", "RECOVERY_ENVELOPE_REJECTED", error = e); error("Не удалось проверить копию ключей. Не сбрасывайте защиту: попробуйте доверенное устройство.") }
+                    requireNotNull(client).encryption().recover(key)
+                    response.put("password_recovery_enabled", true)
+                    vault.save(response)
+                    refreshSecurity(); setupVerificationController(); retryEncryptedEvents()
+                    mutable.update { it.copy(managedRecovery = true, backupStatus = "ready") }
+                    diagnostics.record("INFO", "PASSWORD_RECOVERY_OK")
+                } else if (register) {
+                    createManagedRecovery(secrets, serverName)
+                } else {
+                    error("Для аккаунта ещё не завершена загрузка копии ключей. Откройте профиль на прежнем устройстве и завершите настройку.")
+                }
+                require(state.value.verified) { "Копия ключей загружена, но устройство ещё не подтверждено. Обновите состояние." }
+                runCatching { refreshProfile() }
+                authenticated = true
+            }
+            if (authenticated) break
+        }
+        require(authenticated) { "Неверный логин или пароль. Для аккаунта из старой версии используйте отдельный вход ниже." }
+    }
+
+    fun authenticateLegacy(server: String, login: String, password: String) = action("authenticateLegacy") {
+        val base = Gateway.validateBase(server)
         val response = Gateway.call(base, "/api/login", JSONObject().put("login", login).put("password", password))
-        // Never accept a different homeserver suggested by an account gateway.
-        response.put("homeserver", base)
-        response.put("directory", UUID.randomUUID().toString())
-        response.put("db_key", Vault.encode(ByteArray(32).also { SecureRandom().nextBytes(it) }))
+        response.put("homeserver", base).put("directory", UUID.randomUUID().toString())
+            .put("db_key", Vault.encode(ByteArray(32).also { SecureRandom().nextBytes(it) })).put("login", login.trim().lowercase(java.util.Locale.ROOT))
         connect(response, password)
-        vault.save(response)
-        if (register) client?.setDisplayName(username.trim().removePrefix("@"))
-        runCatching { refreshProfile() }
+    }
+
+    private suspend fun createManagedRecovery(secrets: PasswordSecrets, serverName: String, key: String? = null) {
+        val data = requireNotNull(sessionData)
+        val current = requireNotNull(client)
+        require(state.value.verified) { "Сначала подтвердите своё устройство или восстановите прежние ключи" }
+        val recovery = key ?: current.encryption().enableRecovery(true, null, object : EnableRecoveryProgressListener {
+            override fun onUpdate(status: EnableRecoveryProgress) {}
+        })
+        val envelope = PasswordRecovery.envelope(secrets, recovery, serverName, current.userId())
+        data.put("pending_recovery_envelope", envelope)
+        vault.save(data)
+        uploadPendingRecovery()
+    }
+
+    private fun uploadPendingRecovery() {
+        val data = sessionData ?: return
+        val envelope = data.optJSONObject("pending_recovery_envelope") ?: return
+        if (data.has("pending_credential_salt")) {
+            val account = Gateway.call(state.value.server, "/api/auth/account", token = data.getString("access_token"))
+            require(account.optInt("credential_version") == 2 && account.optString("salt") == data.optString("pending_credential_salt")) {
+                "Сначала завершите перенос аккаунта новым паролем на этом устройстве"
+            }
+            data.put("credential_version", 2).put("credential_salt", data.getString("pending_credential_salt"))
+            data.remove("pending_credential_salt")
+        }
+        Gateway.call(state.value.server, PasswordRecovery.path(requireNotNull(client).userId()), envelope, data.getString("access_token"), "PUT")
+        data.remove("pending_recovery_envelope"); data.put("password_recovery_enabled", true)
+        vault.save(data)
+        mutable.update { it.copy(managedRecovery = true, backupStatus = "ready") }
+        diagnostics.record("INFO", "RECOVERY_ENVELOPE_UPLOADED")
+    }
+
+    fun retryRecoveryUpload() = action("retryRecoveryUpload") { uploadPendingRecovery(); scheduleBackup() }
+
+    fun migratePasswordRecovery(oldPassword: String, newPassword: String, existingKey: String, resetLostKeys: Boolean) = action("migratePasswordRecovery") {
+        PasswordRecovery.validatePassword(newPassword)
+        require(newPassword != oldPassword) { "Выберите новый пароль: старый использовался для входа напрямую на сервере" }
+        val current = requireNotNull(client)
+        val data = requireNotNull(sessionData)
+        val account = Gateway.call(state.value.server, "/api/auth/account", token = data.getString("access_token"))
+        val login = account.getString("login")
+        val serverName = account.getString("server_name")
+        if (data.has("pending_credential_salt") && data.has("pending_recovery_envelope")) {
+            val pendingSalt = data.getString("pending_credential_salt")
+            val resumed = PasswordSecrets(newPassword, pendingSalt, serverName, login).use { secrets ->
+                try {
+                    val proof = Gateway.call(state.value.server, "/api/login", JSONObject().put("login", login)
+                        .put("password", secrets.authentication).put("credential_version", 2).put("credential_salt", pendingSalt))
+                    Gateway.call(state.value.server, "/_matrix/client/v3/logout", JSONObject(), proof.getString("access_token"))
+                    true
+                } catch (e: GatewayHttpException) { if (e.status == 401) false else throw e }
+            }
+            if (resumed) { uploadPendingRecovery(); scheduleBackup(); return@action }
+        }
+        require(account.getInt("credential_version") == 1) { "Защищённый вход уже настроен. Войдите новым паролем." }
+        // Verify the old password before any rotation or explicit identity reset.
+        val proof = Gateway.call(state.value.server, "/api/login", JSONObject().put("login", login).put("password", oldPassword))
+        Gateway.call(state.value.server, "/_matrix/client/v3/logout", JSONObject(), proof.getString("access_token"))
+        if (existingKey.isNotBlank()) current.encryption().recover(existingKey.trim())
+        refreshSecurity()
+        if (!state.value.verified) {
+            require(resetLostKeys) { "Нужны прежние ключи или подтверждение другого устройства. Если ключи утрачены, отдельно подтвердите создание новой защиты без восстановления старой истории." }
+            val handle = current.encryption().resetIdentity()
+            if (handle != null) {
+                try {
+                    val auth = handle.authType() as? CrossSigningResetAuthType.Uiaa
+                        ?: error("Для этого аккаунта требуется подтверждение в браузере")
+                    handle.reset(AuthData.Password(AuthDataPasswordDetails(current.userId(), oldPassword, auth.info.session)))
+                } finally { handle.close() }
+            }
+            withTimeout(60_000) { current.encryption().waitForE2eeInitializationTasks() }
+            refreshSecurity()
+        }
+        require(state.value.verified) { "Устройство ещё не подтверждено. Перенос не выполнен." }
+        val recovery = if (current.encryption().recoveryState() == RecoveryState.DISABLED) {
+            current.encryption().enableRecovery(true, null, object : EnableRecoveryProgressListener { override fun onUpdate(status: EnableRecoveryProgress) {} })
+        } else current.encryption().resetRecoveryKey()
+        val salt = PasswordSecrets.randomSalt()
+        PasswordSecrets(newPassword, salt, serverName, login).use { secrets ->
+            // Persist the already encrypted envelope before changing the login credential.
+            data.put("pending_recovery_envelope", PasswordRecovery.envelope(secrets, recovery, serverName, current.userId()))
+            data.put("pending_credential_salt", salt).put("login", login).put("server_name", serverName)
+            vault.save(data)
+            Gateway.call(state.value.server, "/api/auth/upgrade", JSONObject().put("old_password", oldPassword)
+                .put("new_auth_secret", secrets.authentication).put("salt", salt), data.getString("access_token"))
+            data.put("credential_version", 2).put("credential_salt", salt); data.remove("pending_credential_salt")
+            vault.save(data)
+            uploadPendingRecovery()
+        }
+        setupVerificationController(); refreshSecurity(); retryEncryptedEvents(); scheduleBackup()
+    }
+
+    private fun scheduleBackup() {
+        if (!state.value.managedRecovery) return
+        backupJob?.cancel()
+        backupJob = scope.launch {
+            mutable.update { it.copy(backupStatus = "syncing") }
+            delay(1000)
+            try {
+                val current = client ?: return@launch
+                withTimeout(120_000) { current.encryption().waitForBackupUploadSteadyState(null) }
+                if (client === current) mutable.update { it.copy(backupStatus = "ready") }
+            } catch (e: Exception) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                diagnostics.record("WARNING", "KEY_BACKUP_UPLOAD_FAILED", error = e)
+                mutable.update { it.copy(backupStatus = "error") }
+            }
+        }
     }
 
     private suspend fun connect(data: JSONObject, password: String? = null) {
@@ -126,12 +287,15 @@ class MessengerRepository(private val context: Context) {
         client = built
         sessionData = data
         vault.save(data)
-        canonical.clear(); knownPeers.clear(); allRooms = emptyList()
+        canonical.clear(); knownPeers.clear(); allRooms = emptyList(); visibility.clear(); visibilityChecks.clear()
+        visibility.putAll(ChatVisibilityApi.parse(directPrefs.getString("visibility|" + built.userId(), null)))
         val ownPrefix = built.userId() + "|"
         directPrefs.all.forEach { (key, value) ->
             if (key.startsWith(ownPrefix) && value is String) canonical[key.removePrefix(ownPrefix)] = value
         }
-        mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base) }
+        mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base,
+            managedRecovery = data.optBoolean("password_recovery_enabled"),
+            backupStatus = if (data.optBoolean("password_recovery_enabled")) "syncing" else "not_configured") }
         // Match the initialization order used by the native SDK integration test.
         // A failed first sync does not discard the already persisted device session.
         try { withTimeout(30_000) { built.syncOnceV2(SyncSettingsV2(timeoutMs = 0u)) } }
@@ -140,15 +304,21 @@ class MessengerRepository(private val context: Context) {
         }
         sync = built.syncV2(SyncSettingsV2(), object : SyncListenerV2 {
             override fun onUpdate(response: SyncResponseV2) {
-                scope.launch { runCatching { refreshRooms(); refreshSecurity() } }
+                scope.launch { try { refreshRooms(); refreshSecurity(); scheduleBackup() } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    diagnostics.record("WARNING", "SYNC_STATE_REFRESH_FAILED", error = e)
+                } }
             }
         })
         val ready = withTimeoutOrNull(60_000) { built.encryption().waitForE2eeInitializationTasks(); true } == true
         mutable.update { it.copy(cryptoReady = ready) }
+        diagnostics.record(if (ready) "INFO" else "WARNING", "CRYPTO_INITIALIZATION", "ready=$ready verified=${built.encryption().verificationState()}")
         setupVerificationController()
         refreshRooms()
         refreshSecurity()
         runCatching { refreshProfile() }
+        if (data.has("pending_recovery_envelope") && data.optInt("credential_version") == 2) uploadPendingRecovery()
+        scheduleBackup()
     }
 
     private suspend fun setupVerificationController() {
@@ -164,6 +334,9 @@ class MessengerRepository(private val context: Context) {
         try {
             val current = client ?: return
             val rows = mutableListOf<ChatRoom>()
+            ChatVisibilityApi.parse(current.accountData(ChatVisibilityApi.TYPE)).forEach { (id, remote) ->
+                if (remote.updated > (visibility[id]?.updated ?: -1)) visibility[id] = remote
+            }
             for (room in current.rooms().filter { it.membership() in listOf(Membership.JOINED, Membership.INVITED) }) {
                 val invited = room.membership() == Membership.INVITED
                 // Invited users cannot request the full /members state. Use stripped invite state.
@@ -179,7 +352,26 @@ class MessengerRepository(private val context: Context) {
             }
             if (client !== current) return
             allRooms = rows
-            mutable.update { it.copy(rooms = collapseDirectChats(rows, canonical)) }
+            var visibilityChanged = false
+            for (row in rows) {
+                val marker = visibility[row.id] ?: continue
+                if (!marker.hidden || row.invited || System.currentTimeMillis() - (visibilityChecks[row.id] ?: 0) < 2500) continue
+                visibilityChecks[row.id] = System.currentTimeMillis()
+                try {
+                    val latest = ChatVisibilityApi.latestTime(state.value.server, requireNotNull(sessionData).getString("access_token"), row.id)
+                    if (client !== current) return
+                    if (latest > marker.cutoff) {
+                        visibility[row.id] = marker.copy(hidden = false, updated = maxOf(System.currentTimeMillis(), marker.updated + 1))
+                        visibilityChanged = true
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    diagnostics.record("WARNING", "HIDDEN_CHAT_CHECK_FAILED", error = e)
+                }
+            }
+            if (visibilityChanged) persistVisibility()
+            mutable.update { it.copy(rooms = collapseDirectChats(rows.filter { visibility[it.id]?.hidden != true }, canonical)) }
+            ensureVisibilityChecks()
         } finally { roomsMutex.unlock() }
     }
 
@@ -189,7 +381,7 @@ class MessengerRepository(private val context: Context) {
             verified = encryption.verificationState() == VerificationState.VERIFIED) }
     }
 
-    fun findAndChat(username: String) = action {
+    fun findAndChat(username: String) = action("findAndChat") {
         val data = requireNotNull(sessionData)
         val result = Gateway.call(state.value.server, "/api/users/" + Gateway.escaped(username.trim().removePrefix("@")),
             token = data.getString("access_token"))
@@ -212,21 +404,62 @@ class MessengerRepository(private val context: Context) {
         }
         withTimeout(30_000) { current.awaitRoomRemoteEcho(id) }
         DirectChats.markDirect(state.value.server, data.getString("access_token"), current.userId(), peer, id)
+        visibility[id]?.takeIf { it.hidden }?.let { marker ->
+            visibility[id] = marker.copy(hidden = false, updated = maxOf(System.currentTimeMillis(), marker.updated + 1))
+            persistVisibility()
+        }
         openRoomInternal(id)
         refreshRooms()
     }
 
-    fun openRoom(id: String) = action {
+    fun openRoom(id: String) = action("openRoom") {
         val peer = knownPeers[id]
         if (peer != null) openDirect(peer) else openRoomInternal(id)
     }
 
-    fun openHistoricalRoom(id: String) = action {
+    private fun persistVisibility() {
+        val data = sessionData ?: return
+        val own = requireNotNull(client).userId()
+        val json = ChatVisibilityApi.encode(visibility)
+        directPrefs.edit().putString("visibility|" + own, json.toString()).apply()
+        Gateway.call(state.value.server, ChatVisibilityApi.path(own), json, data.getString("access_token"), "PUT")
+    }
+
+    private fun ensureVisibilityChecks() {
+        if (visibility.none { it.value.hidden } || visibilityJob?.isActive == true) return
+        val current = client ?: return
+        visibilityJob = scope.launch {
+            while (client === current && visibility.any { it.value.hidden }) {
+                delay(3000)
+                try { refreshRooms() } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    diagnostics.record("WARNING", "CHAT_VISIBILITY_REFRESH_FAILED", error = e)
+                }
+            }
+        }
+    }
+
+    fun deleteCurrentChat() = action("deleteCurrentChat") {
+        val id = requireNotNull(state.value.roomId)
+        val peer = state.value.peerId
+        val ids = (allRooms.filter { it.peerId == peer && peer != null }.map { it.id } + id).distinct()
+        val token = requireNotNull(sessionData).getString("access_token")
+        for (roomId in ids) {
+            val invited = allRooms.firstOrNull { it.id == roomId }?.invited == true
+            val cutoff = if (invited) 0L else ChatVisibilityApi.latestTime(state.value.server, token, roomId)
+            visibility[roomId] = ChatVisibility(cutoff, true, System.currentTimeMillis())
+        }
+        persistVisibility()
+        back(); refreshRooms()
+        diagnostics.record("INFO", "CHAT_DELETED_FOR_ACCOUNT")
+    }
+
+    fun openHistoricalRoom(id: String) = action("openHistoricalRoom") {
         require(id in state.value.alternateRoomIds) { "Выберите прежнюю переписку" }
         openRoomInternal(id, historical = true)
     }
 
-    fun openMainConversation() = action { openDirect(requireNotNull(state.value.peerId)) }
+    fun openMainConversation() = action("openMainConversation") { openDirect(requireNotNull(state.value.peerId)) }
 
     private suspend fun openRoomInternal(id: String, historical: Boolean = false) {
         val c = requireNotNull(client)
@@ -256,6 +489,7 @@ class MessengerRepository(private val context: Context) {
                             QueueWedgeError.ExpiredAccessToken -> "Сеанс истёк. Требуется повторный вход."
                             else -> "Отправка приостановлена. Проверьте подключение и повторите попытку."
                         }
+                        diagnostics.record("ERROR", "SEND_QUEUE_FAILED", update.error.javaClass.simpleName + " retryable=${update.isRecoverable}")
                         queueFailures[update.transactionId] = message
                         mutable.update { it.copy(sendError = message, canRetrySend = update.isRecoverable,
                             messages = it.messages.map { m -> if (m.id == update.transactionId) m.copy(status = "Не отправлено") else m }) }
@@ -265,6 +499,8 @@ class MessengerRepository(private val context: Context) {
                         mutable.update { it.copy(sendError = null, canRetrySend = false) }
                     }
                     is RoomSendQueueUpdate.SentEvent -> {
+                        diagnostics.record("INFO", "MESSAGE_SENT")
+                        scheduleBackup()
                         queueFailures.remove(update.transactionId)
                         mutable.update { it.copy(sendError = null, canRetrySend = false) }
                     }
@@ -304,6 +540,8 @@ class MessengerRepository(private val context: Context) {
 
     private fun message(item: TimelineItem): ChatMessage? {
         val event = item.asEvent() ?: return null
+        val cutoff = visibility[state.value.roomId]?.cutoff ?: -1
+        if (event.timestamp.toLong() <= cutoff) return null
         val content = (event.content as? TimelineItemContent.MsgLike)?.content?.kind ?: return null
         val id = when (val value = event.eventOrTransactionId) {
             is EventOrTransactionId.EventId -> value.eventId
@@ -356,14 +594,14 @@ class MessengerRepository(private val context: Context) {
         return room
     }
 
-    fun sendText(text: String, queued: () -> Unit = {}) = action {
+    fun sendText(text: String, queued: () -> Unit = {}) = action("sendText") {
         require(text.isNotBlank() && text.length <= 16_000) { "Сообщение: от 1 до 16 000 символов" }
         sendingRoom()
         requireNotNull(timeline).send(messageEventContentNew(MessageType.Text(TextMessageContent(text, null))))
         withContext(Dispatchers.Main) { queued() }
     }
 
-    fun sendPicked(uri: Uri) = action {
+    fun sendPicked(uri: Uri) = action("sendPicked") {
         sendingRoom()
         val mime = context.contentResolver.getType(uri).orEmpty()
         require(mime.startsWith("image/") || mime.startsWith("video/")) { "Выберите фото или видео" }
@@ -385,7 +623,7 @@ class MessengerRepository(private val context: Context) {
         sendFileInternal(file, if (mime.startsWith("image/")) "image" else "video", mime, 0)
     }
 
-    fun sendRecorded(file: File, kind: String, duration: Long) = action {
+    fun sendRecorded(file: File, kind: String, duration: Long) = action("sendRecorded") {
         sendFileInternal(file, kind, if (kind == "voice") "audio/mp4" else "video/mp4", duration)
     }
 
@@ -414,9 +652,9 @@ class MessengerRepository(private val context: Context) {
         } finally { handle.close() }
     }
 
-    fun older() = action { timeline?.paginateBackwards(30u) }
+    fun older() = action("older") { timeline?.paginateBackwards(30u) }
 
-    fun retrySending() = action {
+    fun retrySending() = action("retrySending") {
         val room = sendingRoom()
         require(state.value.canRetrySend) { "Сначала устраните причину остановки отправки" }
         room.enableSendQueue(true)
@@ -431,7 +669,7 @@ class MessengerRepository(private val context: Context) {
         mutable.update { it.copy(displayName = profile.name, avatarUrl = profile.avatar, profileRevision = it.profileRevision + 1) }
     }
 
-    fun saveProfile(name: String) = action {
+    fun saveProfile(name: String) = action("saveProfile") {
         val clean = name.trim()
         require(clean.isNotBlank() && clean.length <= 64) { "Имя: от 1 до 64 символов" }
         val data = requireNotNull(sessionData)
@@ -439,9 +677,9 @@ class MessengerRepository(private val context: Context) {
         refreshProfile()
     }
 
-    fun setAvatar(uri: Uri) = action { uploadAvatar(avatarJpeg(context, uri)) }
+    fun setAvatar(uri: Uri) = action("setAvatar") { uploadAvatar(avatarJpeg(context, uri)) }
 
-    fun setAvatarJpeg(jpeg: ByteArray) = action {
+    fun setAvatarJpeg(jpeg: ByteArray) = action("setAvatarJpeg") {
         require(jpeg.size <= 2 * 1024 * 1024) { "Фото слишком большое" }
         uploadAvatar(jpeg)
     }
@@ -454,7 +692,7 @@ class MessengerRepository(private val context: Context) {
         refreshProfile()
     }
 
-    fun removeAvatar() = action {
+    fun removeAvatar() = action("removeAvatar") {
         val data = requireNotNull(sessionData)
         ProfileApi.avatar(state.value.server, data.getString("access_token"), requireNotNull(client).userId(), null)
         refreshProfile()
@@ -496,7 +734,7 @@ class MessengerRepository(private val context: Context) {
         }
         if (sessions.isNotEmpty()) timeline?.retryDecryption(sessions)
     }
-    fun refresh() = action {
+    fun refresh() = action("refresh") {
         val ready = withTimeoutOrNull(30_000) { client?.encryption()?.waitForE2eeInitializationTasks(); true } == true
         mutable.update { it.copy(cryptoReady = ready) }
         refreshSecurity()
@@ -505,7 +743,7 @@ class MessengerRepository(private val context: Context) {
         retryEncryptedEvents()
         refreshRooms(); refreshSecurity(); profiles.clear(); runCatching { refreshProfile() }
     }
-    fun createRecovery() = action {
+    fun createRecovery() = action("createRecovery") {
         val encryption = requireNotNull(client).encryption()
         require(encryption.recoveryState() == RecoveryState.DISABLED && encryption.verificationState() == VerificationState.VERIFIED) {
             "Сначала подтвердите устройство или введите существующий ключ восстановления. Существующие ключи не сбрасываются."
@@ -516,13 +754,16 @@ class MessengerRepository(private val context: Context) {
         mutable.update { it.copy(recoveryKey = key) }; refreshSecurity()
     }
     fun hideRecovery() { mutable.update { it.copy(recoveryKey = null) } }
-    fun recover(key: String) = action {
+    fun recover(key: String) = action("recover") {
         requireNotNull(client).encryption().recover(key.trim())
         setupVerificationController(); timeline?.fetchMembers(); retryEncryptedEvents(); refreshSecurity()
         if (state.value.verified) client?.enableAllSendQueues(true)
     }
-    fun logout() = action {
+    fun logout() = action("logout") {
         val c = client ?: return@action
+        visibilityJob?.cancel(); visibilityJob = null
+        backupJob?.cancelAndJoin(); backupJob = null
+        if (state.value.managedRecovery) withTimeout(120_000) { c.encryption().waitForBackupUploadSteadyState(null) }
         c.logout()
         closeActiveRoom(); sync?.cancel(); sync = null
         verificationController?.setDelegate(null); verificationController?.close(); verificationController = null
@@ -531,7 +772,7 @@ class MessengerRepository(private val context: Context) {
         mutable.value = ChatState(loading = false)
     }
 
-    fun requestOwnVerification() = action {
+    fun requestOwnVerification() = action("requestOwnVerification") {
         require(state.value.cryptoReady) { "Дождитесь настройки шифрования" }
         val current = requireNotNull(client)
         current.encryption().userIdentity(current.userId(), true)
@@ -542,7 +783,7 @@ class MessengerRepository(private val context: Context) {
         mutable.update { it.copy(verification = VerificationPrompt("waiting", "Подтверждение устройства", "Примите запрос на другом устройстве этого аккаунта и сравните символы.")) }
     }
 
-    fun requestVerification() = action {
+    fun requestVerification() = action("requestVerification") {
         require(state.value.cryptoReady) { "Шифрование ещё настраивается. Дождитесь завершения и обновите состояние." }
         refreshSecurity()
         require(state.value.verified) { "Сначала подтвердите своё устройство в профиле или восстановите ключи. Проверка собеседника не заменяет восстановление своего сеанса." }
@@ -558,13 +799,13 @@ class MessengerRepository(private val context: Context) {
         requireNotNull(verificationController) { "Ключи ещё настраиваются. Обновите состояние или восстановите ключи в настройках." }.requestUserVerification(peer)
         mutable.update { it.copy(verification = VerificationPrompt("waiting", "Проверка собеседника", "Ожидаем подтверждения на втором устройстве…")) }
     }
-    fun acceptVerification() = action {
+    fun acceptVerification() = action("acceptVerification") {
         val request = requireNotNull(verificationRequest)
         verificationController?.acknowledgeVerificationRequest(request.senderProfile.userId, request.flowId)
         verificationController?.acceptVerificationRequest()
     }
-    fun approveVerification() = action { verificationController?.approveVerification() }
-    fun cancelVerification() = action {
+    fun approveVerification() = action("approveVerification") { verificationController?.approveVerification() }
+    fun cancelVerification() = action("cancelVerification") {
         verificationController?.cancelVerification()
         mutable.update { it.copy(verification = null) }
     }
