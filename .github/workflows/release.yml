@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'New alpha tag, for example v0.4.0-alpha.1'
+        description: 'New alpha tag, for example v0.4.1-alpha.1'
         required: true
-        default: v0.4.0-alpha.1
+        default: v0.4.1-alpha.1
   workflow_run:
     workflows: ['End-to-end integration']
     types: [completed]
@@ -98,4 +98,11 @@ jobs:
           Read README.md and SECURITY.md before deploying. No independent security audit or background push yet.
           APK, complete source, Docker server package and SHA-256 checksums are attached.
           NOTES
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            current=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+            if [ "$current" != "$RELEASE_SHA" ]; then
+              echo "A newer commit is being checked; skipping publication of the older snapshot."
+              exit 0
+            fi
+          fi
           gh release create "$TAG" dist/* --target "$RELEASE_SHA" --title "Private Messenger $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
