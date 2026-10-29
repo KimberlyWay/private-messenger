@@ -42,6 +42,8 @@ class MessengerRepository(private val context: Context) {
     internal val diagnostics = DiagnosticJournal(context)
     val appearance = AppearancePreferences(context)
     private val profiles = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, UserProfile>>()
+    private var profileRefreshJob: Job? = null
+    private var lastProfileRefresh = 0L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val vault = Vault(context)
     private val pendingActions = java.util.concurrent.atomic.AtomicInteger(0)
@@ -174,6 +176,7 @@ class MessengerRepository(private val context: Context) {
         built.restoreSession(Session(data.getString("access_token"), null, data.getString("user_id"),
             data.getString("device_id"), base, null, SlidingSyncVersion.NONE))
         client = built
+        lastProfileRefresh = android.os.SystemClock.elapsedRealtime()
         sessionData = data
         vault.save(data)
         canonical.clear(); knownPeers.clear(); allRooms = emptyList(); visibility.clear(); visibilityChecks.clear(); hiddenMessages.clear(); starredMessages.clear(); messagePreferenceChecks.clear()
@@ -255,6 +258,13 @@ class MessengerRepository(private val context: Context) {
         if (!roomsMutex.tryLock()) return
         try {
             val current = client ?: return
+            if (foreground && android.os.SystemClock.elapsedRealtime() - lastProfileRefresh >= 30_000 && profileRefreshJob?.isActive != true) {
+                lastProfileRefresh = android.os.SystemClock.elapsedRealtime()
+                profileRefreshJob = scope.launch {
+                    try { refreshProfile() }
+                    catch (e: Exception) { if (e is CancellationException) throw e; diagnostics.record("WARNING", "PROFILE_REFRESH_FAILED", error = e) }
+                }
+            }
             val rows = mutableListOf<ChatRoom>()
             ChatVisibilityApi.parse(current.accountData(ChatVisibilityApi.TYPE)).forEach { (id, remote) ->
                 if (remote.updated > (visibility[id]?.updated ?: -1)) visibility[id] = remote
@@ -736,6 +746,7 @@ class MessengerRepository(private val context: Context) {
     fun logout() = action("logout") {
         val c = client ?: return@action
         visibilityJob?.cancel(); visibilityJob = null
+        profileRefreshJob?.cancelAndJoin(); profileRefreshJob = null
         syncJob?.cancelAndJoin(); syncJob = null
         c.logout()
         closeActiveRoom(); syncJob?.cancelAndJoin(); syncJob = null

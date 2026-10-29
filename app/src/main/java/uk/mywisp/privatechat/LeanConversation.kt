@@ -179,12 +179,12 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, tool: Str
                     if (recording) {
                         var drag by remember { mutableStateOf(Offset.Zero) }
                         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).pointerInput(locked) {
-                            detectDragGestures(onDrag = { change, delta -> change.consume(); drag += delta; if (drag.y < -gestureThreshold) locked = true; if (drag.x < -gestureThreshold * 1.3f && !locked) { voice.cancel(); recording = false } })
+                            detectDragGestures(onDragStart = { drag = Offset.Zero }, onDrag = { change, delta -> change.consume(); drag += delta; if (drag.y < -gestureThreshold) locked = true; if (drag.x < -gestureThreshold * 1.3f && !locked) { voice.cancel(); recording = false } })
                         }, verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = { voice.cancel(); recording = false }) { Icon(Icons.Default.DeleteOutline, "Отменить запись", tint = MaterialTheme.colorScheme.error) }
                             Text("${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.labelLarge)
                             Waveform(amplitude, Modifier.weight(1f).height(36.dp).padding(horizontal = 8.dp))
-                            IconButton(onClick = { locked = !locked }) { Icon(if (locked) Icons.Default.Lock else Icons.Default.LockOpen, "Закрепить запись") }
+                            IconButton(onClick = { locked = !locked }) { Icon(if (locked) Icons.Default.Lock else Icons.Default.LockOpen, if (locked) "Снять фиксацию" else "Закрепить запись") }
                         }
                     } else Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { attachments = true }, enabled = !s.busy) { Icon(Icons.Default.AddCircleOutline, "Вложения") }

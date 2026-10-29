@@ -116,11 +116,7 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
     val image by produceState<android.graphics.Bitmap?>(null, file, attachment?.kind) {
         if (file != null && attachment?.kind == "image") value = withContext(Dispatchers.IO) {
             runCatching {
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file!!.path, options)
-                var sample = 1
-                while (options.outWidth / sample > 1024 || options.outHeight / sample > 1024) sample *= 2
-                BitmapFactory.decodeFile(file!!.path, BitmapFactory.Options().apply { inSampleSize = sample })
+                decodeProfile(file!!.path, 1024)
             }.getOrNull()
         }
     }

@@ -22,6 +22,17 @@ class LeanDesignTest {
         ui.waitForIdle()
         Thread.sleep(500)
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        // The AOSP launcher can ANR on a busy headless CI host. Never hide an
+        // app ANR; close only the identified launcher dialog before capturing.
+        val root = instrumentation.uiAutomation.rootInActiveWindow
+        if (root?.findAccessibilityNodeInfosByText("Quickstep isn't responding")?.isNotEmpty() == true) {
+            var close = root.findAccessibilityNodeInfosByText("Close app").firstOrNull()
+            while (close != null && !close.isClickable) close = close.parent
+            check(close?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true)
+            Thread.sleep(800)
+        }
+        check(instrumentation.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("Quickstep isn't responding")?.isEmpty() != false)
+        check(instrumentation.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("Lean isn't responding")?.isEmpty() != false)
         val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -44,6 +55,7 @@ class LeanDesignTest {
     }
     @Test fun renderLightDarkChatSelectionSettingsAndLogin() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.executeShellCommand("am force-stop com.android.launcher3").use { ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
         instrumentation.uiAutomation.executeShellCommand("pm grant ${instrumentation.targetContext.packageName} android.permission.POST_NOTIFICATIONS").use { ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
         val repo = (ui.activity.application as ChatApplication).repository
         ui.waitUntil(30_000) { !repo.state.value.loading }

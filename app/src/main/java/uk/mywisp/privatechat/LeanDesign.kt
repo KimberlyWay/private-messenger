@@ -82,5 +82,19 @@ internal fun decodeProfile(path: String, limit: Int = 2048): Bitmap? {
     BitmapFactory.decodeFile(path, bounds)
     var sample = 1
     while (bounds.outWidth / sample > limit || bounds.outHeight / sample > limit) sample *= 2
-    return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+    val bitmap = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+    val orientation = runCatching { android.media.ExifInterface(path).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1)
+    val matrix = android.graphics.Matrix()
+    when (orientation) {
+        2 -> matrix.setScale(-1f, 1f)
+        3 -> matrix.setRotate(180f)
+        4 -> matrix.setScale(1f, -1f)
+        5 -> { matrix.setRotate(90f); matrix.postScale(-1f, 1f) }
+        6 -> matrix.setRotate(90f)
+        7 -> { matrix.setRotate(270f); matrix.postScale(-1f, 1f) }
+        8 -> matrix.setRotate(270f)
+    }
+    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    if (rotated !== bitmap) bitmap.recycle()
+    return rotated
 }
