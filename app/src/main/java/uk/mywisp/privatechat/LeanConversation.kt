@@ -52,7 +52,7 @@ import java.util.Locale
 import kotlin.math.*
 
 @Composable
-internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: (Boolean) -> Unit) {
+internal fun LeanConversation(repo: MessengerRepository, s: ChatState, tool: String = "", toolVersion: Int = 0, overlay: (Boolean) -> Unit) {
     val context = LocalContext.current
     val locale = Locale.forLanguageTag(androidx.compose.ui.text.intl.Locale.current.toLanguageTag())
     val gestureThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 80.dp.toPx() }
@@ -63,6 +63,9 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
     var search by remember(s.roomId) { mutableStateOf("") }
     var searching by remember { mutableStateOf(false) }
     var starredOnly by remember { mutableStateOf(false) }
+    LaunchedEffect(tool, toolVersion) {
+        when (tool) { "search" -> { searching = !searching; search = "" }; "stars" -> starredOnly = !starredOnly }
+    }
     var attachments by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf(false) }
     var locked by remember { mutableStateOf(false) }
@@ -110,6 +113,9 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
     var firstUnread by remember(s.roomId) { mutableStateOf<String?>(null) }
     LaunchedEffect(s.unreadBeforeId) { if (firstUnread == null) firstUnread = s.unreadBeforeId }
     val list = rememberLazyListState()
+    val showJump by remember(list) { derivedStateOf {
+        (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) < list.layoutInfo.totalItemsCount - 4
+    } }
     var previousLast by remember(s.roomId) { mutableStateOf<String?>(null) }
     LaunchedEffect(s.messages.lastOrNull()?.id) {
         val latest = s.messages.lastOrNull()
@@ -130,10 +136,10 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
                 IconButton(onClick = { forwarding = true }, enabled = chosen.isNotEmpty()) { Icon(Icons.Default.Forward, "Переслать выбранное") }
                 IconButton(onClick = { deleting = true }, enabled = chosen.isNotEmpty()) { Icon(Icons.Default.DeleteOutline, "Удалить выбранное") }
             }
-        } else Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+        } else if (searching || starredOnly) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             if (searching) TextField(search, { search = it }, Modifier.weight(1f), placeholder = { Text("Поиск в переписке") }, singleLine = true, colors = leanFieldColors(), shape = RoundedCornerShape(24.dp))
-            IconToggleButton(starredOnly, { starredOnly = it }) { Icon(if (starredOnly) Icons.Default.Star else Icons.Default.StarOutline, "Помеченные сообщения", tint = if (starredOnly) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
-            IconButton(onClick = { searching = !searching; search = "" }) { Icon(if (searching) Icons.Default.Close else Icons.Default.Search, "Поиск в чате") }
+            if (starredOnly) FilterChip(true, { starredOnly = false }, label = { Text("Помеченные") }, trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) })
+            if (searching) IconButton(onClick = { searching = false; search = "" }) { Icon(Icons.Default.Close, "Закрыть поиск") }
         }
         Box(Modifier.weight(1f).fillMaxWidth().background(chatBackground())) {
             LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 16.dp), verticalArrangement = Arrangement.spacedBy(if (LocalAppearance.current.compact) 4.dp else 8.dp)) {
@@ -157,7 +163,7 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
                 }
                 if (visibleMessages.isEmpty()) item { Text(if (search.isNotBlank()) "Ничего не найдено" else if (starredOnly) "Здесь появятся помеченные сообщения" else "Скажите привет 👋", Modifier.fillMaxWidth().padding(32.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            if (!searching && !starredOnly && (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) < s.messages.size - 4) SmallFloatingActionButton(onClick = { scope.launch { list.animateScrollToItem(s.messages.size) } }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp), containerColor = MaterialTheme.colorScheme.secondaryContainer) { Icon(Icons.Default.ArrowDownward, "К новым сообщениям") }
+            if (!searching && !starredOnly && showJump) SmallFloatingActionButton(onClick = { scope.launch { list.animateScrollToItem(s.messages.size) } }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp), containerColor = MaterialTheme.colorScheme.secondaryContainer) { Icon(Icons.Default.ArrowDownward, "К новым сообщениям") }
         }
         SnackbarHost(snackbar)
         s.sendError?.let { error -> Surface(color = MaterialTheme.colorScheme.errorContainer) { Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(error, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall); if (s.canRetrySend) TextButton(onClick = repo::retrySending) { Text("Повторить") } } } }

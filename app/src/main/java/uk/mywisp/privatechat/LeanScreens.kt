@@ -65,6 +65,8 @@ internal fun LeanContent(repo: MessengerRepository, activity: ComponentActivity,
     var more by remember { mutableStateOf(false) }
     var deleteChat by remember { mutableStateOf(false) }
     var selectionOverlay by remember { mutableStateOf(false) }
+    var chatTool by remember(s.roomId) { mutableStateOf("") }
+    var toolVersion by remember(s.roomId) { mutableIntStateOf(0) }
     val gear by animateFloatAsState(if (settings) 90f else 0f, spring(dampingRatio = .72f), label = "settings rotation")
     LaunchedEffect(s.userId, s.liveNotifications) {
         if (s.userId != null && s.liveNotifications) (activity as? MainActivity)?.enableLiveNotifications()
@@ -87,15 +89,18 @@ internal fun LeanContent(repo: MessengerRepository, activity: ComponentActivity,
                     }
                 }, navigationIcon = { if (settings && page != "root" || !settings && s.roomId != null) IconButton(onClick = { back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
                     actions = {
+                        if (s.roomId != null && !settings) IconButton(onClick = { chatTool = "search"; toolVersion++ }) { Icon(Icons.Default.Search, "Поиск в чате") }
                         if (s.roomId != null && !settings) Box {
                             IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "Действия чата") }
                             DropdownMenu(more, { more = false }) {
                                 DropdownMenuItem(text = { Text("Профиль собеседника") }, leadingIcon = { Icon(Icons.Default.Person, null) }, onClick = { more = false; profile = s.peerId })
                                 DropdownMenuItem(text = { Text("Обновить") }, leadingIcon = { Icon(Icons.Default.Refresh, null) }, onClick = { more = false; repo.refresh() })
+                                DropdownMenuItem(text = { Text("Помеченные сообщения") }, leadingIcon = { Icon(Icons.Default.StarOutline, null) }, onClick = { more = false; chatTool = "stars"; toolVersion++ })
+                                DropdownMenuItem(text = { Text("Настройки") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { more = false; settings = true; page = "root" })
                                 DropdownMenuItem(text = { Text("Удалить чат у себя") }, leadingIcon = { Icon(Icons.Default.DeleteOutline, null) }, onClick = { more = false; deleteChat = true })
                             }
                         }
-                        IconButton(onClick = { settings = !settings; page = "root" }) { Icon(Icons.Default.Settings, "Настройки", Modifier.rotate(gear)) }
+                        if (s.roomId == null || settings) IconButton(onClick = { settings = !settings; page = "root" }) { Icon(Icons.Default.Settings, "Настройки", Modifier.rotate(gear)) }
                     })
             }, bottomBar = {
                 if (s.roomId == null || settings) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
@@ -108,7 +113,7 @@ internal fun LeanContent(repo: MessengerRepository, activity: ComponentActivity,
                     Crossfade(targetState = if (settings) "settings:$page" else if (s.roomId != null) "chat" else "rooms", label = "navigation") { destination ->
                         when {
                             destination.startsWith("settings:") -> LeanSettings(repo, s, destination.substringAfter(':')) { page = it }
-                            destination == "chat" -> LeanConversation(repo, s) { selectionOverlay = it }
+                            destination == "chat" -> LeanConversation(repo, s, chatTool, toolVersion) { selectionOverlay = it }
                             else -> LeanRooms(repo, s)
                         }
                     }

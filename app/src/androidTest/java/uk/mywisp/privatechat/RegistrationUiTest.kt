@@ -20,7 +20,7 @@ class RegistrationUiTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
 
     private fun node(label: String): SemanticsNodeInteraction {
-        ui.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(label))
+        ui.onNode(hasScrollToIndexAction() and SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange)).performScrollToNode(hasText(label))
         return ui.onNodeWithText(label)
     }
 

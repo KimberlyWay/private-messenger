@@ -40,7 +40,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: |
             adb logcat -c
-            ./gradlew --no-daemon connectedE2eAndroidTest || { adb logcat -d -v time > android-test-logcat.txt; exit 1; }
+            ./gradlew --no-daemon connectedE2eAndroidTest || { adb pull /sdcard/Android/data/uk.mywisp.privatechat.e2e/files/design design-previews || true; adb logcat -d -v time > android-test-logcat.txt; exit 1; }
             adb pull /sdcard/Android/data/uk.mywisp.privatechat.e2e/files/design design-previews
       - name: Upload test reports
         if: always()
