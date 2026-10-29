@@ -335,10 +335,16 @@ class MessengerRepository(private val context: Context) {
         refreshProfile()
     }
 
-    fun setAvatar(uri: Uri) = action {
+    fun setAvatar(uri: Uri) = action { uploadAvatar(avatarJpeg(context, uri)) }
+
+    fun setAvatarJpeg(jpeg: ByteArray) = action {
+        require(jpeg.size <= 2 * 1024 * 1024) { "Фото слишком большое" }
+        uploadAvatar(jpeg)
+    }
+
+    private fun uploadAvatar(jpeg: ByteArray) {
         val data = requireNotNull(sessionData)
         val token = data.getString("access_token")
-        val jpeg = avatarJpeg(context, uri)
         val mxc = ProfileApi.upload(state.value.server, token, jpeg)
         ProfileApi.avatar(state.value.server, token, requireNotNull(client).userId(), mxc)
         refreshProfile()

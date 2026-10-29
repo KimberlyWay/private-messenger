@@ -10,4 +10,6 @@ Never post real passwords, access tokens, recovery keys, keystores, server `.env
 
 Do not reset cross-signing keys or disable encrypted-room checks to make a test pass. Recovery requires the user-held recovery key or an already trusted device. Server backups alone cannot recover plaintext.
 
-The current registration limiter is in memory and is not comprehensive abuse protection. Background push, account lifecycle management and a production APK signing/update process remain incomplete. Follow upstream Synapse, Matrix SDK, Android and container security updates.
+The current registration limiter is in memory and is not comprehensive abuse protection. Background push and account lifecycle management remain incomplete. Release APKs use a permanent signing key stored in GitHub Actions Secrets; do not rotate it during routine updates. Follow upstream Synapse, Matrix SDK, Android and container security updates.
+
+Password-only restoration of encrypted history is planned, not implemented. The current server receives the authentication password, so this password must not simply be reused to encrypt a server-hosted recovery key. See [the recovery design requirements](docs/RECOVERY.md).

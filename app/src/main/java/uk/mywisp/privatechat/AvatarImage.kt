@@ -10,7 +10,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /** Bounds memory use, applies camera orientation and strips EXIF before upload. */
-internal fun avatarJpeg(context: Context, uri: Uri): ByteArray {
+internal fun loadAvatarBitmap(context: Context, uri: Uri): Bitmap {
     val file = File.createTempFile("avatar-source-", ".img", context.cacheDir)
     try {
         context.contentResolver.openInputStream(uri)?.use { input ->
@@ -30,7 +30,7 @@ internal fun avatarJpeg(context: Context, uri: Uri): ByteArray {
         BitmapFactory.decodeFile(file.path, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Не удалось прочитать изображение" }
         var sample = 1
-        while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+        while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *= 2
         val original = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
             ?: error("Выберите поддерживаемое фото")
         val matrix = Matrix()
@@ -47,14 +47,31 @@ internal fun avatarJpeg(context: Context, uri: Uri): ByteArray {
             ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(270f)
         }
         val rotated = Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true)
-        val side = minOf(rotated.width, rotated.height)
-        val square = Bitmap.createBitmap(rotated, (rotated.width - side) / 2, (rotated.height - side) / 2, side, side)
-        val scaled = Bitmap.createScaledBitmap(square, minOf(side, 512), minOf(side, 512), true)
-        return try {
-            ByteArrayOutputStream().use { out ->
-                check(scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)) { "Не удалось подготовить фото" }
-                out.toByteArray()
-            }
-        } finally { listOf(original, rotated, square, scaled).distinct().forEach { it.recycle() } }
+        if (rotated !== original) original.recycle()
+        return rotated
     } finally { file.delete() }
+}
+
+/** JPEG contains only the chosen square; the circle is a presentation mask. */
+internal fun cropAvatarJpeg(bitmap: Bitmap, crop: AvatarCrop): ByteArray {
+    val output = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888)
+    return try {
+        val canvas = android.graphics.Canvas(output)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        val transform = Matrix().apply {
+            setTranslate(-crop.left, -crop.top)
+            postScale(512f / crop.side, 512f / crop.side)
+        }
+        canvas.drawBitmap(bitmap, transform, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+        ByteArrayOutputStream().use { out ->
+            check(output.compress(Bitmap.CompressFormat.JPEG, 90, out)) { "Не удалось подготовить фото" }
+            out.toByteArray()
+        }
+    } finally { output.recycle() }
+}
+
+internal fun avatarJpeg(context: Context, uri: Uri): ByteArray {
+    val bitmap = loadAvatarBitmap(context, uri)
+    return try { cropAvatarJpeg(bitmap, avatarCrop(bitmap.width, bitmap.height, 1f, 0f, 0f)) }
+    finally { bitmap.recycle() }
 }

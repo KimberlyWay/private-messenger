@@ -1,4 +1,5 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 
 package uk.mywisp.privatechat
 
@@ -81,26 +82,6 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun PrivateTheme(appearance: Appearance = Appearance(), content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val dark = when (appearance.theme) { "light" -> false; "dark" -> true; else -> isSystemInDarkTheme() }
-    val accent = when (appearance.accent) {
-        "ocean" -> if (dark) Color(0xFF8AD0ED) else Color(0xFF006783)
-        "forest" -> if (dark) Color(0xFFA0D5AF) else Color(0xFF286B42)
-        else -> if (dark) Color(0xFFD0BCFF) else Color(0xFF6750A4)
-    }
-    val colors = if (appearance.accent == "dynamic" && android.os.Build.VERSION.SDK_INT >= 31) {
-        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else if (dark) darkColorScheme(primary = accent, onPrimary = Color(0xFF17212B),
-        primaryContainer = accent.copy(alpha = 1f).let { Color(it.red * .25f, it.green * .25f, it.blue * .25f) },
-        onPrimaryContainer = Color(0xFFF1EDFF))
-    else lightColorScheme(primary = accent, onPrimary = Color.White,
-        primaryContainer = Color(.88f + accent.red * .08f, .88f + accent.green * .08f, .88f + accent.blue * .08f),
-        onPrimaryContainer = Color(0xFF1C2430))
-    MaterialExpressiveTheme(colorScheme = colors, content = content)
-}
-
-@Composable
 private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
     val s by repo.state.collectAsStateWithLifecycle()
     var settings by rememberSaveable { mutableStateOf(false) }
@@ -111,12 +92,12 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
         onDispose { if (keyVisible) activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
     }
     if (s.loading) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) { LoadingIndicator() }
     } else if (s.userId == null) {
         AuthenticationScreen(repo, s)
     } else {
         Scaffold(topBar = {
-            TopAppBar(title = { Column {
+            TopAppBar(colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface), title = { Column {
                 Text(if (settings) "Профиль" else if (s.roomId != null) s.roomName else "Чаты", maxLines = 1)
                 if (s.roomId != null && !settings) Text("Сквозное шифрование", style = MaterialTheme.typography.labelSmall)
             } }, navigationIcon = {
@@ -309,8 +290,10 @@ private fun ConversationScreen(repo: MessengerRepository, s: ChatState) {
     LaunchedEffect(recording) { while (recording) { delay(1000); seconds++ } }
     val list = rememberLazyListState()
     LaunchedEffect(s.messages.lastOrNull()?.id) { if (s.messages.isNotEmpty()) list.animateScrollToItem(s.messages.size) }
+    val appearance = LocalAppearance.current
     Column(Modifier.fillMaxSize().imePadding()) {
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().background(chatBackground()), state = list,
+            contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(if (appearance.compact) 4.dp else 8.dp)) {
             item { TextButton(onClick = repo::older, modifier = Modifier.fillMaxWidth(), enabled = !s.busy) { Text("Загрузить предыдущие") } }
             items(s.messages, key = { it.id }) { message -> MessageBubble(repo, message) }
         }
@@ -369,11 +352,14 @@ private fun MessageBubble(repo: MessengerRepository, message: ChatMessage) {
             }.getOrNull()
         }
     }
+    val appearance = LocalAppearance.current
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.own) Arrangement.End else Arrangement.Start) {
-        Surface(shape = RoundedCornerShape(22.dp), color = if (message.own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        Surface(shape = RoundedCornerShape(appearance.bubbleRadius.dp), color = if (message.own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier.widthIn(max = 310.dp)) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (attachment == null) Text(message.text, style = MaterialTheme.typography.bodyLarge)
+            Column(Modifier.padding(if (appearance.compact) 8.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (attachment == null) androidx.compose.foundation.text.selection.SelectionContainer {
+                    Text(message.text, style = MaterialTheme.typography.bodyLarge.copy(fontSize = appearance.textSize.sp))
+                }
                 else {
                     val circle = attachment.kind == "circle"
                     Box(Modifier.then(if (circle) Modifier.size(200.dp).clip(CircleShape) else Modifier.fillMaxWidth().heightIn(min = 64.dp))
@@ -416,7 +402,7 @@ private fun MediaDialog(file: File, kind: String, close: () -> Unit) {
                             BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
                         }
                     }
-                    bitmap?.let { Image(it.asImageBitmap(), "Фото", Modifier.fillMaxWidth().heightIn(max = 500.dp)) }
+                    bitmap?.let { ZoomablePhoto(it) }
                 } else {
                     val player = remember(file) { ExoPlayer.Builder(context).build().apply {
                         setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file))); prepare(); playWhenReady = true
@@ -438,7 +424,8 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
     var security by rememberSaveable { mutableStateOf(false) }
     var recoveryInput by remember { mutableStateOf("") }
     var logout by remember { mutableStateOf(false) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let(repo::setAvatar) }
+    var avatarUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> avatarUri = uri }
     val username = s.userId.orEmpty().substringBefore(':')
     LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -449,7 +436,7 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
                     ProfileAvatar(repo, s.userId, s.displayName.ifBlank { username.removePrefix("@") }, s.profileRevision, 104)
                     Text(s.displayName.ifBlank { "Мой профиль" }, style = MaterialTheme.typography.headlineSmall)
                     Text(username, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    FilledTonalButton(onClick = { picker.launch("image/*") }, enabled = !s.busy) {
+                    FilledTonalButton(onClick = { picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !s.busy) {
                         Icon(Icons.Default.AddAPhoto, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp)); Text("Изменить фото")
                     }
@@ -463,25 +450,7 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
             label = { Text("Отображаемое имя") }, singleLine = true, shape = RoundedCornerShape(16.dp)) }
         item { Button(onClick = { repo.saveProfile(name) }, enabled = !s.busy && name.isNotBlank() && name.trim() != s.displayName,
             modifier = Modifier.fillMaxWidth()) { Text("Сохранить имя") } }
-        item { Text("Оформление", style = MaterialTheme.typography.titleLarge) }
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("system" to "Авто", "light" to "Светлая", "dark" to "Тёмная").forEach { (value, label) ->
-                    FilterChip(selected = appearance.theme == value, onClick = { repo.appearance.update(theme = value) }, label = { Text(label) })
-                }
-            }
-        }
-        item { Text("Цвет приложения", style = MaterialTheme.typography.titleMedium) }
-        item {
-            Column {
-                listOf(listOf("dynamic" to "Из обоев", "lavender" to "Лаванда"), listOf("ocean" to "Океан", "forest" to "Лес")).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { (value, label) -> FilterChip(selected = appearance.accent == value,
-                            onClick = { repo.appearance.update(accent = value) }, label = { Text(label) }) }
-                    }
-                }
-            }
-        }
+        appearanceItems(repo.appearance, appearance)
         item { HorizontalDivider() }
         item { FilledTonalButton(onClick = { security = !security }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.VerifiedUser, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
@@ -502,6 +471,7 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
         item { Text("Фото и видео до 50 МБ. Синхронизация работает, пока приложение запущено. Доставка уведомлений при закрытом приложении пока не подключена.") }
         item { OutlinedButton(onClick = { logout = true }) { Text("Выйти из аккаунта") } }
     }
+    avatarUri?.let { uri -> AvatarEditor(uri, { avatarUri = null }, repo::setAvatarJpeg) }
     if (logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("Выйти?") },
         text = { Text("Для старой истории после повторного входа понадобится ключ восстановления. Убедитесь, что сохранили его.") },
         confirmButton = { TextButton(onClick = { logout = false; repo.logout() }) { Text("Выйти") } },
