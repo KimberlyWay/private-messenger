@@ -365,248 +365,103 @@ private fun MessageBubble(repo: MessengerRepository, message: ChatMessage) {
                         if (image != null) Image(image!!.asImageBitmap(), "Фото", Modifier.fillMaxWidth().heightIn(max = 280.dp))
                         else if (loading) CircularProgressIndicator(Modifier.padding(16.dp))
                         else Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(if (attachment.kind == "voice") Icons.Default.PlayArrow else if (circle) Icons.Default.PlayCircle else Icons.Default.…8246 tokens truncated…        mutable.update { it.copy(sendError = message, canRetrySend = update.isRecoverable,
-                            messages = it.messages.map { m -> if (m.id == update.transactionId) m.copy(status = "Не отправлено") else m }) }
+                            Icon(if (attachment.kind == "voice") Icons.Default.PlayArrow else if (circle) Icons.Default.PlayCircle else Icons.Default.Movie, null, Modifier.size(40.dp))
+                            Text(if (loadError) "Нажмите, чтобы повторить" else if (file != null) "Воспроизвести" else when (attachment.kind) {
+                                "voice" -> "Голосовое"; "circle" -> "Кружочек"; "video" -> "Видео"; else -> "Фото"
+                            })
+                        }
                     }
-                    is RoomSendQueueUpdate.RetryEvent -> {
-                        queueFailures.remove(update.transactionId)
-                        mutable.update { it.copy(sendError = null, canRetrySend = false) }
+                }
+                message.trustWarning?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
+                Text(if (message.status.isNotEmpty()) message.status else SimpleDateFormat("HH:mm",
+                    Locale.forLanguageTag(androidx.compose.ui.text.intl.Locale.current.toLanguageTag())).format(Date(message.time)),
+                    style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.End))
+            }
+        }
+    }
+    if (opened != null && attachment != null) MediaDialog(opened!!, attachment.kind) { opened = null }
+}
+
+@Composable
+private fun MediaDialog(file: File, kind: String, close: () -> Unit) {
+    val context = LocalContext.current
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) {
+            Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (kind == "image") {
+                    val bitmap by produceState<android.graphics.Bitmap?>(null, file) {
+                        value = withContext(Dispatchers.IO) {
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeFile(file.path, bounds)
+                            var sample = 1
+                            while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *= 2
+                            BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+                        }
                     }
-                    is RoomSendQueueUpdate.SentEvent -> {
-                        diagnostics.record("INFO", "MESSAGE_SENT")
-                        queueFailures.remove(update.transactionId)
-                        mutable.update { it.copy(sendError = null, canRetrySend = false) }
+                    bitmap?.let { ZoomablePhoto(it) }
+                } else {
+                    val player = remember(file) { ExoPlayer.Builder(context).build().apply {
+                        setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file))); prepare(); playWhenReady = true
+                    } }
+                    DisposableEffect(player) { onDispose { player.release() } }
+                    AndroidView(factory = { (android.view.LayoutInflater.from(it).inflate(R.layout.video_player, null) as PlayerView).apply { this.player = player } },
+                        modifier = if (kind == "circle") Modifier.size(280.dp).clip(CircleShape) else Modifier.fillMaxWidth().height(if (kind == "voice") 110.dp else 320.dp))
+                }
+                TextButton(onClick = close) { Text("Закрыть") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(repo: MessengerRepository, s: ChatState, openDiagnostics: () -> Unit) {
+    val appearance by repo.appearance.state.collectAsStateWithLifecycle()
+    var name by remember(s.userId, s.displayName) { mutableStateOf(s.displayName) }
+    var logout by remember { mutableStateOf(false) }
+    var avatarUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> avatarUri = uri }
+    val username = s.userId.orEmpty().substringBefore(':')
+    LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ProfileAvatar(repo, s.userId, s.displayName.ifBlank { username.removePrefix("@") }, s.profileRevision, 104)
+                    Text(s.displayName.ifBlank { "Мой профиль" }, style = MaterialTheme.typography.headlineSmall)
+                    Text(username, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    FilledTonalButton(onClick = { picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !s.busy) {
+                        Icon(Icons.Default.AddAPhoto, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp)); Text("Изменить фото")
                     }
-                    else -> Unit
+                    if (s.avatarUrl != null) TextButton(onClick = repo::removeAvatar, enabled = !s.busy) { Text("Удалить фото") }
+                    Text("Фото и имя видны другим пользователям", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        })
-        listener = currentTimeline.addListener(object : TimelineListener {
-            override fun onUpdate(diff: List<TimelineDiff>) {
-                if (timelineGeneration != generation) return
-                synchronized(itemLock) {
-                    if (timelineGeneration != generation) return
-                    applyDiff(diff)
-                    mutable.update { it.copy(messages = items.mapNotNull(::message)) }
+        }
+        item { OutlinedTextField(name, { if (it.length <= 64) name = it }, Modifier.fillMaxWidth(),
+            label = { Text("Отображаемое имя") }, singleLine = true, shape = RoundedCornerShape(16.dp)) }
+        item { Button(onClick = { repo.saveProfile(name) }, enabled = !s.busy && name.isNotBlank() && name.trim() != s.displayName,
+            modifier = Modifier.fillMaxWidth()) { Text("Сохранить имя") } }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("История на любом устройстве", style = MaterialTheme.typography.titleMedium)
+                    Text("Войдите с тем же логином и паролем — сообщения и вложения загрузятся с сервера автоматически.")
+                    Text("Соединение защищено HTTPS/TLS. Сообщения хранятся на сервере и доступны его владельцу.", style = MaterialTheme.typography.bodySmall)
                 }
             }
-        })
-        currentTimeline.fetchMembers()
-        currentTimeline.paginateBackwards(30u)
-    }
-
-    private fun applyDiff(diffs: List<TimelineDiff>) {
-        for (diff in diffs) when (diff) {
-            is TimelineDiff.Append -> items.addAll(diff.values)
-            TimelineDiff.Clear -> items.clear()
-            is TimelineDiff.PushFront -> items.add(0, diff.value)
-            is TimelineDiff.PushBack -> items.add(diff.value)
-            TimelineDiff.PopFront -> if (items.isNotEmpty()) items.removeAt(0) else Unit
-            TimelineDiff.PopBack -> if (items.isNotEmpty()) items.removeAt(items.lastIndex) else Unit
-            is TimelineDiff.Insert -> items.add(diff.index.toInt(), diff.value)
-            is TimelineDiff.Set -> items[diff.index.toInt()] = diff.value
-            is TimelineDiff.Remove -> items.removeAt(diff.index.toInt())
-            is TimelineDiff.Truncate -> while (items.size > diff.length.toInt()) items.removeAt(items.lastIndex)
-            is TimelineDiff.Reset -> { items.clear(); items.addAll(diff.values) }
         }
+        appearanceItems(repo.appearance, appearance)
+        item { HorizontalDivider() }
+        item { Text("Фото и видео до 50 МБ. Синхронизация работает, пока приложение запущено. Доставка уведомлений при закрытом приложении пока не подключена.") }
+        item { FilledTonalButton(onClick = openDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("Диагностика и журнал") } }
+        item { OutlinedButton(onClick = { logout = true }) { Text("Выйти из аккаунта") } }
     }
-
-    private fun message(item: TimelineItem): ChatMessage? {
-        val event = item.asEvent() ?: return null
-        val activeRoom = state.value.roomId
-        val cutoff = if (activeRoom != null) visibility[activeRoom]?.cutoff ?: -1 else -1
-        if (event.timestamp.toLong() <= cutoff) return null
-        val content = (event.content as? TimelineItemContent.MsgLike)?.content?.kind ?: return null
-        val id = when (val value = event.eventOrTransactionId) {
-            is EventOrTransactionId.EventId -> value.eventId
-            is EventOrTransactionId.TransactionId -> value.transactionId
-        }
-        val status = if (event.isRemote) "" else if (queueFailures.containsKey(id) || event.localSendState?.javaClass?.simpleName?.contains("Fail") == true)
-            "Не отправлено" else "Отправляется…"
-        if (content is MsgLikeKind.UnableToDecrypt) return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(),
-            "Сообщение из прежнего зашифрованного чата недоступно")
-        val msg = (content as? MsgLikeKind.Message)?.content ?: return null
-        val attachment = when (val type = msg.msgType) {
-            is MessageType.Image -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "image/jpeg", "image")
-            is MessageType.Video -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "video/mp4",
-                if (type.content.filename.startsWith("circle_")) "circle" else "video")
-            is MessageType.Audio -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "audio/mp4", "voice")
-            else -> null
-        }
-        return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(), msg.body, attachment, status)
-    }
-
-    fun back() { closeActiveRoom(); mutable.update { it.copy(roomId = null, peerId = null, messages = emptyList()) } }
-    private fun closeActiveRoom() {
-        timelineGeneration = ""
-        queueListener?.cancel(); queueListener = null
-        listener?.cancel(); listener = null
-        timeline?.close(); timeline = null
-        synchronized(itemLock) { items.clear() }
-    }
-
-    private suspend fun sendingRoom(): Room {
-        require(!state.value.historical) { "Откройте основной чат, чтобы отправить сообщение" }
-        val room = client?.getRoom(requireNotNull(state.value.roomId)) ?: error("Выберите чат")
-        require(!room.isEncrypted()) { "Откройте облачный чат через поиск собеседника" }
-        room.enableSendQueue(true)
-        return room
-    }
-
-    fun sendText(text: String, queued: () -> Unit = {}) = action("sendText") {
-        require(text.isNotBlank() && text.length <= 16_000) { "Сообщение: от 1 до 16 000 символов" }
-        sendingRoom()
-        requireNotNull(timeline).send(messageEventContentNew(MessageType.Text(TextMessageContent(text, null))))
-        withContext(Dispatchers.Main) { queued() }
-    }
-
-    fun sendPicked(uri: Uri) = action("sendPicked") {
-        sendingRoom()
-        val mime = context.contentResolver.getType(uri).orEmpty()
-        require(mime.startsWith("image/") || mime.startsWith("video/")) { "Выберите фото или видео" }
-        val extension = if (mime.startsWith("image/")) "jpg" else "mp4"
-        val directory = File(context.cacheDir, "uploads").apply { mkdirs() }
-        val file = File(directory, "media_${UUID.randomUUID()}.$extension")
-        try {
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            file.outputStream().use { output ->
-                val buffer = ByteArray(64 * 1024); var total = 0L
-                while (true) {
-                    val count = input.read(buffer); if (count < 0) break
-                    total += count; require(total <= MAX_MEDIA) { "Размер файла не должен превышать 50 МБ" }
-                    output.write(buffer, 0, count)
-                }
-            }
-        } ?: error("Файл недоступен")
-        } catch (e: Exception) { file.delete(); throw e }
-        sendFileInternal(file, if (mime.startsWith("image/")) "image" else "video", mime, 0)
-    }
-
-    fun sendRecorded(file: File, kind: String, duration: Long) = action("sendRecorded") {
-        sendFileInternal(file, kind, if (kind == "voice") "audio/mp4" else "video/mp4", duration)
-    }
-
-    private suspend fun sendFileInternal(file: File, kind: String, mime: String, millis: Long) {
-        sendingRoom()
-        require(file.length() in 1..MAX_MEDIA) { "Файл пуст или больше 50 МБ" }
-        val params = UploadParameters(UploadSource.File(file.path), null, null, null, null,
-            if (kind == "circle") "{\"uk.mywisp.circle\":true}" else null)
-        val info = when (kind) {
-            "image" -> AttachmentKind.Image(ImageInfo(null, null, mime, file.length().toULong(), null, null, null, false), null)
-            "voice" -> AttachmentKind.Voice(AudioInfo(Duration.ofMillis(millis), file.length().toULong(), mime), emptyList())
-            else -> AttachmentKind.Video(VideoInfo(Duration.ofMillis(millis).takeIf { millis > 0 }, null, null, mime,
-                file.length().toULong(), null, null, null), null)
-        }
-        requireNotNull(timeline).sendAttachment(params, info).join()
-    }
-
-    suspend fun download(attachment: Attachment): File = withContext(Dispatchers.IO) {
-        val c = requireNotNull(client)
-        val directory = File(context.cacheDir, "opened-media").apply { mkdirs() }
-        val handle = c.getMediaFile(attachment.source, attachment.name, attachment.mime, true, directory.path)
-        try {
-            val target = File(directory, UUID.randomUUID().toString() + "." + if (attachment.kind == "image") "img" else "media")
-            check(handle.persist(target.path)) { "Не удалось сохранить вложение" }
-            target
-        } finally { handle.close() }
-    }
-
-    fun older() = action("older") { timeline?.paginateBackwards(30u) }
-
-    fun retrySending() = action("retrySending") {
-        val room = sendingRoom()
-        require(state.value.canRetrySend) { "Сначала устраните причину остановки отправки" }
-        room.enableSendQueue(true)
-    }
-
-    private fun refreshProfile() {
-        val data = sessionData ?: return
-        val current = client ?: return
-        val profile = ProfileApi.get(state.value.server, data.getString("access_token"), current.userId())
-        if (client !== current) return
-        profiles[current.userId()] = System.currentTimeMillis() to profile
-        mutable.update { it.copy(displayName = profile.name, avatarUrl = profile.avatar, profileRevision = it.profileRevision + 1) }
-    }
-
-    fun saveProfile(name: String) = action("saveProfile") {
-        val clean = name.trim()
-        require(clean.isNotBlank() && clean.length <= 64) { "Имя: от 1 до 64 символов" }
-        val data = requireNotNull(sessionData)
-        ProfileApi.name(state.value.server, data.getString("access_token"), requireNotNull(client).userId(), clean)
-        refreshProfile()
-    }
-
-    fun setAvatar(uri: Uri) = action("setAvatar") { uploadAvatar(avatarJpeg(context, uri)) }
-
-    fun setAvatarJpeg(jpeg: ByteArray) = action("setAvatarJpeg") {
-        require(jpeg.size <= 2 * 1024 * 1024) { "Фото слишком большое" }
-        uploadAvatar(jpeg)
-    }
-
-    private fun uploadAvatar(jpeg: ByteArray) {
-        val data = requireNotNull(sessionData)
-        val token = data.getString("access_token")
-        val mxc = ProfileApi.upload(state.value.server, token, jpeg)
-        ProfileApi.avatar(state.value.server, token, requireNotNull(client).userId(), mxc)
-        refreshProfile()
-    }
-
-    fun removeAvatar() = action("removeAvatar") {
-        val data = requireNotNull(sessionData)
-        ProfileApi.avatar(state.value.server, data.getString("access_token"), requireNotNull(client).userId(), null)
-        refreshProfile()
-    }
-
-    suspend fun profilePhoto(user: String): File? = withContext(Dispatchers.IO) {
-        val data = sessionData ?: return@withContext null
-        val current = client ?: return@withContext null
-        val base = data.getString("homeserver")
-        val token = data.getString("access_token")
-        val cached = profiles[user]
-        val profile = if (cached != null && System.currentTimeMillis() - cached.first < 60_000) cached.second else {
-            ProfileApi.get(base, token, user).also {
-                if (profiles.size > 200) profiles.clear()
-                profiles[user] = System.currentTimeMillis() to it
-            }
-        }
-        val mxc = profile.avatar ?: return@withContext null
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest((base + mxc).toByteArray())
-            .joinToString("") { "%02x".format(it.toInt() and 255) }
-        val directory = File(context.cacheDir, "profile-photos").apply { mkdirs() }
-        val file = File(directory, hash + ".img")
-        if (!file.isFile) {
-            val bytes = ProfileApi.download(base, token, mxc)
-            check(client === current) { "Сеанс завершён" }
-            val temp = File.createTempFile("avatar-", ".tmp", directory)
-            try { temp.writeBytes(bytes); check(temp.renameTo(file) || file.isFile) }
-            finally { temp.delete() }
-        }
-        file
-    }
-    fun dismissError() { mutable.update { it.copy(error = null) } }
-    fun refresh() = action("refresh") {
-        timeline?.fetchMembers()
-        refreshRooms(); profiles.clear(); runCatching { refreshProfile() }
-    }
-    fun logout() = action("logout") {
-        val c = client ?: return@action
-        visibilityJob?.cancel(); visibilityJob = null
-        c.logout()
-        closeActiveRoom(); sync?.cancel(); sync = null
-        c.close(); client = null; vault.clear(); sessionData = null; profiles.clear(); canonical.clear(); knownPeers.clear(); queueFailures.clear(); allRooms = emptyList()
-        File(context.cacheDir, "profile-photos").deleteRecursively()
-        mutable.value = ChatState(loading = false)
-    }
-
-    init {
-        scope.launch {
-            try {
-                vault.load()?.let { connect(it) }
-            } catch (_: Exception) {
-                mutable.update { it.copy(error = "Не удалось восстановить сеанс. Войдите снова — история загрузится с сервера.") }
-            } finally { mutable.update { it.copy(loading = false) } }
-        }
-    }
-
-    companion object { const val MAX_MEDIA = 50L * 1024 * 1024 }
+    avatarUri?.let { uri -> AvatarEditor(uri, { avatarUri = null }, repo::setAvatarJpeg) }
+    if (logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("Выйти?") },
+        text = { Text("После входа с тем же логином и паролем история загрузится с сервера автоматически.") },
+        confirmButton = { TextButton(onClick = { logout = false; repo.logout() }) { Text("Выйти") } },
+        dismissButton = { TextButton(onClick = { logout = false }) { Text("Остаться") } })
 }
