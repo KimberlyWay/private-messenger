@@ -78,6 +78,16 @@ internal fun LazyListScope.appearanceItems(prefs: AppearancePreferences, a: Appe
         }
     }
     }
+    if (section != "layout") {
+    item {
+        Text("Фон переписки", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("plain" to "Чистый", "tonal" to "Тон", "gradient" to "Градиент").forEach { (key, label) ->
+                FilterChip(selected = a.background == key, onClick = { prefs.set(a.copy(background = key)) }, label = { Text(label) })
+            }
+        }
+    }
+    }
     item { ChatAppearancePreview(a) }
     if (section != "colors") {
     item {
@@ -93,14 +103,6 @@ internal fun LazyListScope.appearanceItems(prefs: AppearancePreferences, a: Appe
         Text("Скругление пузырей", style = MaterialTheme.typography.titleMedium)
         Slider(value = a.bubbleRadius, onValueChange = { prefs.set(a.copy(bubbleRadius = it)) }, valueRange = 4f..28f,
             modifier = Modifier.semantics { contentDescription = "Скругление пузырей" })
-    }
-    item {
-        Text("Фон переписки", style = MaterialTheme.typography.titleMedium)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("plain" to "Чистый", "tonal" to "Тон", "gradient" to "Градиент").forEach { (key, label) ->
-                FilterChip(selected = a.background == key, onClick = { prefs.set(a.copy(background = key)) }, label = { Text(label) })
-            }
-        }
     }
     item {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

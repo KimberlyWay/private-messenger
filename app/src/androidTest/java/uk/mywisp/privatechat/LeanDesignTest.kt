@@ -24,8 +24,22 @@ class LeanDesignTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
         try {
-            val directory = File(instrumentation.targetContext.getExternalFilesDir(null), "design").apply { mkdirs() }
-            File(directory, "$name.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val resolver = instrumentation.targetContext.contentResolver
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "$name.png")
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Lean-design")
+                    put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = requireNotNull(resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values))
+                requireNotNull(resolver.openOutputStream(uri)).use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                values.clear(); values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } else {
+                val directory = File(instrumentation.targetContext.getExternalFilesDir(null), "design").apply { mkdirs() }
+                File(directory, "$name.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            }
         } finally { bitmap.recycle() }
     }
     @Test fun renderLightDarkChatSelectionSettingsAndLogin() {

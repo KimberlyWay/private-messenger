@@ -524,7 +524,7 @@ class MessengerRepository(private val context: Context) {
         val pickedName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }.orEmpty()
         val extension = pickedName.substringAfterLast('.', "bin").take(10).filter { it.isLetterOrDigit() }.ifBlank { "bin" }
         val directory = File(context.cacheDir, "uploads/" + UUID.randomUUID()).apply { mkdirs() }
-        val safeName = pickedName.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").take(120).trim('.').ifBlank { "media.$extension" }
+        val safeName = pickedName.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").take(80).trim('.').ifBlank { "media.$extension" }
         val file = File(directory, safeName)
         try {
         context.contentResolver.openInputStream(uri)?.use { input ->
@@ -714,7 +714,7 @@ class MessengerRepository(private val context: Context) {
             require(event.optString("type") == "m.room.message")
             val content = event.getJSONObject("content")
             require(content.has("msgtype")) { "Удалённое сообщение нельзя переслать" }
-            content.remove("m.relates_to"); content.remove("m.new_content")
+            content.remove("m.relates_to"); content.remove("m.new_content"); content.remove("m.mentions")
             content.put("uk.mywisp.lean.forwarded", true)
             Gateway.call(state.value.server, "/_matrix/client/v3/rooms/${Gateway.escaped(target)}/send/m.room.message/${UUID.randomUUID()}", content, token, "PUT")
         }
