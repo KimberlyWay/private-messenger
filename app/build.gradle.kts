@@ -12,7 +12,7 @@ android {
         applicationId = "uk.mywisp.privatechat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
+        versionCode = 3
         versionName = "0.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["allowCleartext"] = "false"
@@ -31,8 +31,6 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Keep emulator libraries in development/test builds only.
-            ndk { abiFilters += listOf("arm64-v8a") }
             if (System.getenv("ANDROID_KEYSTORE_PATH") != null) signingConfig = signingConfigs.getByName("privateRelease")
         }
         create("e2e") {
