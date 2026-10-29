@@ -55,6 +55,7 @@ services:
       REGISTRATION_SHARED_SECRET: ${REGISTRATION_SHARED_SECRET}
       GATEWAY_DATABASE_URL: postgresql://gateway:${GATEWAY_DATABASE_PASSWORD}@db/gateway
       REGISTRATION_LIMIT: ${REGISTRATION_LIMIT:-5}
+      LOGIN_LIMIT: ${LOGIN_LIMIT:-20}
     depends_on:
       synapse: {condition: service_healthy}
     healthcheck:

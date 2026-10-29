@@ -162,7 +162,7 @@ async def register(body: Registration, request: Request):
 
 @app.post("/api/login")
 async def login(body: Credentials, request: Request):
-    await rate_limit(request, "login", 20)
+    await rate_limit(request, "login", int(os.environ.get("LOGIN_LIMIT", "20")))
     key = normalize(body.login, LOGIN_RE)
     # Do not enforce the creation password policy on login.
     password = body.password.get_secret_value()

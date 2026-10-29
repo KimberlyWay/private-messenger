@@ -28,7 +28,7 @@ def configure(domain, url, test=False, port=8088):
     values = {"SERVER_NAME": domain, "PUBLIC_BASE_URL": url.rstrip("/"), "BIND_PORT": str(port),
               "HTTPS_PORT": str(parsed.port or 443), "POSTGRES_ADMIN_PASSWORD": admin,
               "SYNAPSE_DATABASE_PASSWORD": synapse, "GATEWAY_DATABASE_PASSWORD": gateway,
-              "REGISTRATION_SHARED_SECRET": registration, "REGISTRATION_LIMIT": "1000" if test else "5"}
+              "REGISTRATION_SHARED_SECRET": registration, "REGISTRATION_LIMIT": "1000" if test else "5", "LOGIN_LIMIT": "1000" if test else "20"}
     env = ROOT / ".env"
     fd = os.open(env, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as file:
@@ -45,8 +45,8 @@ def configure(domain, url, test=False, port=8088):
         "allow_guest_access": False, "report_stats": False, "enable_metrics": False,
         "url_preview_enabled": False, "trusted_key_servers": [], "federation_domain_whitelist": [],
         "suppress_key_server_warning": True, "password_config": {"enabled": True},
-        "rc_login": {"address": {"per_second": 0.2, "burst_count": 30},
-                     "account": {"per_second": 0.1, "burst_count": 10}},
+        "rc_login": {"address": {"per_second": 100 if test else 0.2, "burst_count": 1000 if test else 30},
+                     "account": {"per_second": 100 if test else 0.1, "burst_count": 1000 if test else 10}},
     }
     # JSON is also valid YAML; using stdlib avoids an installer dependency.
     (generated / "homeserver.yaml").write_text(json.dumps(config, indent=2) + "\n")
