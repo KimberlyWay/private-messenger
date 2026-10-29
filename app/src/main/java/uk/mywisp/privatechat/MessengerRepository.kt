@@ -371,6 +371,11 @@ class MessengerRepository(private val context: Context) {
             }
             if (visibilityChanged) persistVisibility()
             mutable.update { it.copy(rooms = collapseDirectChats(rows.filter { visibility[it.id]?.hidden != true }, canonical)) }
+            val active = state.value.roomId
+            if (active != null) {
+                if (visibility[active]?.hidden == true) back()
+                else synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message)) } }
+            }
             ensureVisibilityChecks()
         } finally { roomsMutex.unlock() }
     }
@@ -444,12 +449,17 @@ class MessengerRepository(private val context: Context) {
         val peer = state.value.peerId
         val ids = (allRooms.filter { it.peerId == peer && peer != null }.map { it.id } + id).distinct()
         val token = requireNotNull(sessionData).getString("access_token")
+        val updated = visibility.toMutableMap()
         for (roomId in ids) {
             val invited = allRooms.firstOrNull { it.id == roomId }?.invited == true
             val cutoff = if (invited) 0L else ChatVisibilityApi.latestTime(state.value.server, token, roomId)
-            visibility[roomId] = ChatVisibility(cutoff, true, System.currentTimeMillis())
+            updated[roomId] = ChatVisibility(cutoff, true, System.currentTimeMillis())
         }
-        persistVisibility()
+        val json = ChatVisibilityApi.encode(updated)
+        val own = requireNotNull(client).userId()
+        Gateway.call(state.value.server, ChatVisibilityApi.path(own), json, token, "PUT")
+        visibility.putAll(updated)
+        directPrefs.edit().putString("visibility|" + own, json.toString()).apply()
         back(); refreshRooms()
         diagnostics.record("INFO", "CHAT_DELETED_FOR_ACCOUNT")
     }
@@ -540,7 +550,8 @@ class MessengerRepository(private val context: Context) {
 
     private fun message(item: TimelineItem): ChatMessage? {
         val event = item.asEvent() ?: return null
-        val cutoff = visibility[state.value.roomId]?.cutoff ?: -1
+        val activeRoom = state.value.roomId
+        val cutoff = if (activeRoom != null) visibility[activeRoom]?.cutoff ?: -1 else -1
         if (event.timestamp.toLong() <= cutoff) return null
         val content = (event.content as? TimelineItemContent.MsgLike)?.content?.kind ?: return null
         val id = when (val value = event.eventOrTransactionId) {

@@ -37,6 +37,7 @@ class ConversationFlowTest {
         val rightContext = AccountContext(context, "conversation_b_$suffix")
         val alice = MessengerRepository(leftContext)
         val bob = MessengerRepository(rightContext)
+        val secondBob = MessengerRepository(AccountContext(context, "conversation_b2_$suffix"))
         val aliceName = "flowa_$suffix"
         val bobName = "flowb_$suffix"
         val password = "Test-" + UUID.randomUUID()
@@ -90,9 +91,15 @@ class ConversationFlowTest {
             assertFalse(bob.diagnostics.export().contains(fresh))
             val token = requireNotNull(Vault(rightContext).load()).getString("access_token")
             assertFalse(bob.diagnostics.export().contains(token))
+            secondBob.authenticate(BuildConfig.DEFAULT_SERVER, "private_" + bobName, "", password, false)
+            until("Another phone signs in with the same password") { secondBob.state.value.userId != null && !secondBob.state.value.busy }
+            noError(secondBob); assertTrue(secondBob.state.value.verified)
+            secondBob.findAndChat(aliceName)
+            until("Same conversation on the other phone") { secondBob.state.value.roomId == id && !secondBob.state.value.busy }
             bob.deleteCurrentChat()
             until("Delete removes the chat from the account list") { bob.state.value.roomId == null && bob.state.value.rooms.isEmpty() && !bob.state.value.busy }
             noError(bob)
+            until("Deletion closes the open conversation on the other phone") { secondBob.state.value.roomId == null && secondBob.state.value.rooms.isEmpty() }
             val afterDelete = "after-delete-" + UUID.randomUUID()
             alice.sendText(afterDelete)
             until("A new incoming message restores the same chat") { bob.state.value.rooms.any { it.id == id } }
@@ -101,8 +108,8 @@ class ConversationFlowTest {
             until("New message appears") { bob.state.value.messages.any { it.text == afterDelete } }
             assertFalse("Deleted history remains hidden", bob.state.value.messages.any { it.text == text || it.text == reply })
         } finally {
-            alice.logout(); bob.logout()
-            until("Test accounts close") { alice.state.value.userId == null && bob.state.value.userId == null && !alice.state.value.busy && !bob.state.value.busy }
+            alice.logout(); bob.logout(); secondBob.logout()
+            until("Test accounts close") { alice.state.value.userId == null && bob.state.value.userId == null && secondBob.state.value.userId == null && !alice.state.value.busy && !bob.state.value.busy && !secondBob.state.value.busy }
         }
     }
 

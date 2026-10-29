@@ -33,6 +33,11 @@ class PasswordRecoveryTest {
             catch (_: javax.crypto.AEADBadTagException) {}
         }
     }
+    @Test fun unicodePasswordsUseTheSameUtf8Kdf() {
+        PasswordSecrets("Пароль-длинный-123🔮", PasswordSecrets.encode(ByteArray(32)), "ci.invalid", "alice").use {
+            assertEquals("pm2_eIRR9s6ae1YJB4A6ZdFO9jm-W9cumUg937Yr-IbkOTQ", it.authentication)
+        }
+    }
     @Test fun legacyAccountMigratesWithoutDiscardingIdentityAndCanLoginWithNewPassword() = runBlocking(Dispatchers.IO) {
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
         val login = "legacy_" + suffix
