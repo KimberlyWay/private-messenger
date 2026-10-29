@@ -54,6 +54,8 @@ import kotlin.math.*
 @Composable
 internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: (Boolean) -> Unit) {
     val context = LocalContext.current
+    val locale = Locale.forLanguageTag(androidx.compose.ui.text.intl.Locale.current.toLanguageTag())
+    val gestureThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 80.dp.toPx() }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var text by remember(s.roomId) { mutableStateOf("") }
@@ -171,7 +173,7 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
                     if (recording) {
                         var drag by remember { mutableStateOf(Offset.Zero) }
                         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).pointerInput(locked) {
-                            detectDragGestures(onDrag = { change, delta -> change.consume(); drag += delta; if (drag.y < -80) locked = true; if (drag.x < -120 && !locked) { voice.cancel(); recording = false } })
+                            detectDragGestures(onDrag = { change, delta -> change.consume(); drag += delta; if (drag.y < -gestureThreshold) locked = true; if (drag.x < -gestureThreshold * 1.3f && !locked) { voice.cancel(); recording = false } })
                         }, verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = { voice.cancel(); recording = false }) { Icon(Icons.Default.DeleteOutline, "Отменить запись", tint = MaterialTheme.colorScheme.error) }
                             Text("${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}", style = MaterialTheme.typography.labelLarge)
@@ -207,7 +209,7 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
     }
     if (menu && chosen.isNotEmpty()) Dialog(onDismissRequest = { clearSelection() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxWidth().padding(24.dp).heightIn(max = 680.dp).verticalScroll(rememberScrollState()), horizontalAlignment = if (chosen.first().own) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            MessageBubble(repo, chosen.first(), selected = true)
+            MessageBubble(repo, chosen.first(), selected = true, condensed = true)
             Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 16.dp, modifier = Modifier.widthIn(max = 280.dp)) {
                 Column(Modifier.padding(vertical = 8.dp)) {
                     MenuAction(Icons.Default.Reply, "Ответить", chosen.size == 1 && chosen[0].id.startsWith("$")) { reply = chosen[0]; clearSelection() }
@@ -241,7 +243,7 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
             itemsIndexed(targets) { _, target -> SettingsRow(Icons.Default.ChatBubbleOutline, target.name, "Переслать ${chosen.size} сообщ.") { if (room != null) repo.forwardMessages(room, chosen.map { it.id }, target.id); forwarding = false; clearSelection() } }
         }
     }
-    if (info && chosen.isNotEmpty()) AlertDialog(onDismissRequest = { info = false; clearSelection() }, title = { Text("О сообщении") }, text = { val m = chosen.first(); Text("${m.sender.substringBefore(':')}\n${SimpleDateFormat("d MMMM yyyy, HH:mm:ss", Locale.getDefault()).format(Date(m.time))}\n${m.status.ifBlank { if (m.read) "Прочитано" else "Отправлено на сервер" }}") }, confirmButton = { TextButton(onClick = { info = false; clearSelection() }) { Text("Понятно") } })
+    if (info && chosen.isNotEmpty()) AlertDialog(onDismissRequest = { info = false; clearSelection() }, title = { Text("О сообщении") }, text = { val m = chosen.first(); Text("${m.sender.substringBefore(':')}\n${SimpleDateFormat("d MMMM yyyy, HH:mm:ss", locale).format(Date(m.time))}\n${m.status.ifBlank { if (m.read) "Прочитано" else "Отправлено на сервер" }}") }, confirmButton = { TextButton(onClick = { info = false; clearSelection() }) { Text("Понятно") } })
 }
 
 @Composable

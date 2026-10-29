@@ -156,7 +156,7 @@ internal fun ProfileEditor(repo: MessengerRepository, s: ChatState) {
         item { Button(onClick = { repo.saveProfileDetails(status, shape) }, enabled = !s.busy && (status != s.personalStatus || shape != s.avatarShape), modifier = Modifier.fillMaxWidth()) { Text("Сохранить профиль") } }
         item { Text("Имя, фото, форма аватара и личный статус видны другим пользователям Lean.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
-    avatarUri?.let { AvatarEditor(it, { avatarUri = null }, repo::setAvatarJpeg) }
+    avatarUri?.let { AvatarEditor(it, { avatarUri = null }, repo::setAvatarJpeg, shape) }
     if (viewProfile && s.userId != null) PeerProfileSheet(repo, s.userId) { viewProfile = false }
 }
 
@@ -176,7 +176,7 @@ internal fun PeerProfileSheet(repo: MessengerRepository, user: String, close: ()
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val p = profile
                     Box(Modifier.clickable(enabled = p?.avatar != null) { scope.launchSafely({ error = true }) { openedKind = "image"; opened = repo.profilePhotoUrl(requireNotNull(p?.avatar)) } }) {
-                        ProfileAvatar(repo, user, p?.name.orEmpty(), attempt, 144, p?.shape)
+                        ProfileAvatar(repo, user, p?.name.orEmpty(), attempt + (p?.hashCode() ?: 0), 144, p?.shape)
                     }
                     Text(p?.name?.ifBlank { user.substringBefore(':') } ?: user.substringBefore(':'), style = MaterialTheme.typography.headlineMedium)
                     Text(user.substringBefore(':'), color = MaterialTheme.colorScheme.onSurfaceVariant)

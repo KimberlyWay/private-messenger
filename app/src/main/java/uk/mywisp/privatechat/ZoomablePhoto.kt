@@ -15,11 +15,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 
 @Composable
-internal fun ZoomablePhoto(bitmap: Bitmap) {
+internal fun ZoomablePhoto(bitmap: Bitmap, modifier: Modifier = Modifier.fillMaxWidth().height(440.dp)) {
     var scale by remember(bitmap) { mutableFloatStateOf(1f) }
     var offset by remember(bitmap) { mutableStateOf(Offset.Zero) }
     val image = remember(bitmap) { bitmap.asImageBitmap() }
-    Box(Modifier.fillMaxWidth().height(440.dp).clipToBounds()
+    Box(modifier.clipToBounds()
         .pointerInput(bitmap) {
             detectTapGestures(onDoubleTap = { scale = if (scale > 1f) 1f else 2.5f; offset = Offset.Zero })
         }

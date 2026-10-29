@@ -56,14 +56,15 @@ class LeanDesignTest {
                     ChatMessage("\$preview2", repo.state.value.userId!!, true, now - 60_000, "Давай! В 18:30 подойдёт?", read = true),
                     ChatMessage("\$preview3", "@alex:ci.invalid", false, now, "Да, до встречи!")))
             for (theme in listOf("light", "dark")) {
-                ui.runOnUiThread { ui.activity.setContent { key("chat:$theme") { PrivateTheme(Appearance(theme = theme, accent = "lavender")) { LeanConversation(repo, state) {} } } } }
+                ui.runOnUiThread { ui.activity.setContent { key("chat:$theme") { PrivateTheme(Appearance(theme = theme, accent = "lavender")) { LeanContent(repo, ui.activity, state) } } } }
                 capture("chat_$theme")
                 ui.onNodeWithText("Давай! В 18:30 подойдёт?").performTouchInput { longClick() }
                 ui.onNodeWithText("Удалить").assertExists()
                 capture("message_menu_$theme")
-                ui.runOnUiThread { ui.activity.setContent { key("settings:$theme") { PrivateTheme(Appearance(theme = theme, accent = "lavender")) { LeanSettings(repo, state, "root") {} } } } }
+                ui.runOnUiThread { ui.activity.setContent { key("settings:$theme") { PrivateTheme(Appearance(theme = theme, accent = "lavender")) { LeanContent(repo, ui.activity, state.copy(roomId = null, messages = emptyList())) } } } }
+                ui.onNodeWithContentDescription("Настройки").performClick()
                 capture("settings_$theme")
-                ui.runOnUiThread { ui.activity.setContent { key("profile:$theme") { PrivateTheme(Appearance(theme = theme, accent = "lavender")) { ProfileEditor(repo, state) } } } }
+                ui.onNodeWithText("Фото, имя и личный статус").performClick()
                 capture("profile_$theme")
             }
         } finally {

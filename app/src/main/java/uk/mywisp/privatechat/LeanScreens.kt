@@ -54,6 +54,11 @@ internal fun ConnectionCaption(status: ConnectionStatus) {
 @Composable
 internal fun LeanApp(repo: MessengerRepository, activity: ComponentActivity) {
     val s by repo.state.collectAsStateWithLifecycle()
+    LeanContent(repo, activity, s)
+}
+
+@Composable
+internal fun LeanContent(repo: MessengerRepository, activity: ComponentActivity, s: ChatState) {
     var settings by rememberSaveable { mutableStateOf(false) }
     var page by rememberSaveable { mutableStateOf("root") }
     var profile by remember { mutableStateOf<String?>(null) }

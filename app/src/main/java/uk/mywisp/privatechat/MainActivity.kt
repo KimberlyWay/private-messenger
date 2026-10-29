@@ -98,7 +98,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLongPress: () -> Unit = {}, onClick: () -> Unit = {}, selected: Boolean = false, quote: String? = null) {
+internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLongPress: () -> Unit = {}, onClick: () -> Unit = {}, selected: Boolean = false, quote: String? = null, condensed: Boolean = false) {
     var opened by remember { mutableStateOf<File?>(null) }
     var loadError by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
@@ -125,6 +125,7 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
         }
     }
     val appearance = LocalAppearance.current
+    val locale = Locale.forLanguageTag(androidx.compose.ui.text.intl.Locale.current.toLanguageTag())
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.own) Arrangement.End else Arrangement.Start) {
         Surface(shape = RoundedCornerShape(topStart = appearance.bubbleRadius.dp, topEnd = appearance.bubbleRadius.dp, bottomStart = if (message.own) appearance.bubbleRadius.dp else 8.dp, bottomEnd = if (message.own) 8.dp else appearance.bubbleRadius.dp), color = if (message.own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier.widthIn(max = 310.dp).combinedClickable(onClick = onClick, onLongClick = onLongPress), tonalElevation = if (selected) 6.dp else 0.dp) {
@@ -133,7 +134,7 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
                     Column(Modifier.padding(10.dp)) { Text("В ответ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); Text(quote, maxLines = 2, style = MaterialTheme.typography.bodySmall) }
                 }
                 if (attachment == null) {
-                    Text(message.text, style = MaterialTheme.typography.bodyLarge.copy(fontSize = appearance.textSize.sp), color = if (message.own) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
+                    Text(message.text, maxLines = if (condensed) 8 else Int.MAX_VALUE, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge.copy(fontSize = appearance.textSize.sp), color = if (message.own) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
                 }
                 else {
                     val circle = attachment.kind == "circle"
@@ -154,7 +155,7 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
                 message.trustWarning?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
                 Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (message.starred) Icon(Icons.Default.Star, "Помечено", Modifier.size(12.dp))
-                    Text(if (message.status.isNotEmpty()) message.status else SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.time)),
+                    Text(if (message.status.isNotEmpty()) message.status else SimpleDateFormat("HH:mm", locale).format(Date(message.time)),
                         style = MaterialTheme.typography.labelSmall,
                         color = (if (message.own) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = .75f))
                     if (message.own && message.status.isEmpty()) Icon(if (message.read) Icons.Default.DoneAll else Icons.Default.Done,
@@ -169,6 +170,21 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
 @Composable
 internal fun MediaDialog(file: File, kind: String, close: () -> Unit) {
     val context = LocalContext.current
+    if (kind == "image") {
+        Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            Surface(Modifier.fillMaxSize(), color = Color.Black) {
+                val bitmap by produceState<android.graphics.Bitmap?>(null, file) { value = withContext(Dispatchers.IO) { runCatching { decodeProfile(file.path) }.getOrNull() } }
+                Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                    bitmap?.let { ZoomablePhoto(it, Modifier.fillMaxSize()) }
+                    Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(Color.Black.copy(alpha = .55f)).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = close) { Icon(Icons.Default.Close, "Закрыть фото", tint = Color.White) }
+                        Text("Фото", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+            }
+        }
+        return
+    }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) {
             Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {

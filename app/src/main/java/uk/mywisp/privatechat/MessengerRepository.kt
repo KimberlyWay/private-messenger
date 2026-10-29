@@ -666,7 +666,7 @@ class MessengerRepository(private val context: Context) {
         lastReadEvent = latest
         val current = client ?: return
         scope.launch { try { current.getRoom(roomId)?.let { room -> room.markAsRead(ReceiptType.READ); room.markAsRead(ReceiptType.FULLY_READ) } }
-            catch (e: Exception) { if (e is CancellationException) throw e; diagnostics.record("WARNING", "READ_RECEIPT_FAILED", error = e) } }
+            catch (e: Exception) { if (e is CancellationException) throw e; if (lastReadEvent == latest) lastReadEvent = ""; diagnostics.record("WARNING", "READ_RECEIPT_FAILED", error = e) } }
     }
 
     private fun loadMessagePreferences(room: String, force: Boolean = false) {
