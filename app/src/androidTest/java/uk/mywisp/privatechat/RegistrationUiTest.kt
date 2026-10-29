@@ -32,6 +32,7 @@ class RegistrationUiTest {
         try {
             ui.waitUntil(30_000) { !repo.state.value.loading }
             ui.onNodeWithText("Адрес сервера").assertDoesNotExist()
+            ui.onNodeWithText("Вход в аккаунт из старой версии").assertDoesNotExist()
             node("Создать аккаунт").performClick()
             ui.onNodeWithText("Адрес сервера").assertDoesNotExist()
             node("Логин для входа").performTextInput("private_ui_$suffix")

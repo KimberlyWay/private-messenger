@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'New alpha tag, for example v0.4.1-alpha.1'
+        description: 'New alpha tag, for example v0.5.0-alpha.1'
         required: true
-        default: v0.4.1-alpha.1
+        default: v0.5.0-alpha.1
   workflow_run:
     workflows: ['End-to-end integration']
     types: [completed]
@@ -94,7 +94,7 @@ jobs:
           TAG: ${{ steps.gate.outputs.tag }}
         run: |
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          Experimental alpha: Android E2EE messenger with self-hosted Matrix server.
+          Experimental alpha: Android cloud messenger with a self-hosted Matrix server and HTTPS/TLS transport. Messages are readable by the server operator.
           Read README.md and SECURITY.md before deploying. No independent security audit or background push yet.
           APK, complete source, Docker server package and SHA-256 checksums are attached.
           NOTES

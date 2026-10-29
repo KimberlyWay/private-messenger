@@ -32,6 +32,7 @@ for attempt in range(30):
 else:
     raise RuntimeError("Edge proxy did not become ready")
 
+assert call("/api/config")["chat_mode"] == "cloud-v1"
 suffix = uuid.uuid4().hex[:10]
 login, username, password = "login_" + suffix, "user_" + suffix, "Test-" + uuid.uuid4().hex
 body = {"login": login, "username": username, "password": password}
@@ -69,22 +70,24 @@ room_path = "/_matrix/client/v3/rooms/" + quote(room_id, safe="")
 alice_joined = room_id in call("/_matrix/client/v3/joined_rooms", token=session["access_token"])["joined_rooms"]
 creator, invitee = (session, bob_session) if alice_joined else (bob_session, session)
 call(room_path + "/members", token=invitee["access_token"], expected=403)
-encryption = call(room_path + "/state/m.room.encryption", token=creator["access_token"])
-assert encryption["algorithm"] == "m.megolm.v1.aes-sha2"
+call(room_path + "/state/m.room.encryption", token=creator["access_token"], expected=404)
+assert call(room_path + "/state/m.room.history_visibility", token=creator["access_token"])["history_visibility"] == "shared"
 call("/_matrix/client/v3/join/" + quote(room_id, safe=""), {}, token=invitee["access_token"])
 assert call("/api/chats", {"username": username}, token=bob_session["access_token"])["room_id"] == room_id
 
-# Adopt a valid legacy two-person encrypted room, never a room belonging to another pair.
+# Pre-cloud encrypted rooms cannot become cloud history. Create a separate canonical room.
 carol_name = "carol_" + suffix
 carol = call("/api/register", {"login": "carol_login_" + suffix, "username": carol_name, "password": password}, expected=201)
 old = call("/_matrix/client/v3/createRoom", {
     "is_direct": True, "preset": "private_chat", "invite": [carol["user_id"]],
     "initial_state": [{"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]
 }, token=session["access_token"])["room_id"]
-assert call("/api/chats", {"username": carol_name, "candidate_room_ids": [old]}, token=session["access_token"])["room_id"] == old
+cloud = call("/api/chats", {"username": carol_name, "candidate_room_ids": [old]}, token=session["access_token"])["room_id"]
+assert cloud != old
+call("/_matrix/client/v3/rooms/" + quote(cloud, safe="") + "/state/m.room.encryption", token=session["access_token"], expected=404)
 other = call("/api/chats", {"username": carol_name, "candidate_room_ids": [room_id]}, token=bob_session["access_token"])["room_id"]
 assert other not in (old, room_id), "An unrelated room must never be adopted"
-print("PASS: concurrent canonical DMs, encrypted room state, invite permissions, legacy adoption and pair validation")
+print("PASS: concurrent cloud DMs, shared history, invite permissions, encrypted-room separation and pair validation")
 
 # Current clients derive separate authentication and recovery secrets on the phone.
 import base64
@@ -108,3 +111,13 @@ assert modern["user_id"] == session["user_id"]
 assert call("/api/auth/account", token=modern["access_token"])["credential_version"] == 2
 call("/api/login", {"login": login, "password": password}, expected=401)
 print("PASS: legacy credential migration, password-derived login and no automatic raw-password downgrade")
+
+# Messages and files are available to another device while original devices are offline.
+message = "cloud-history-" + uuid.uuid4().hex
+event = call(room_path + "/send/m.room.message", {"msgtype": "m.text", "body": message}, token=session["access_token"])
+fresh_bob = call("/api/login", {"login": bob_login, "password": password})
+assert fresh_bob["device_id"] != bob_session["device_id"]
+assert call(room_path + "/event/" + quote(event["event_id"], safe=""), token=fresh_bob["access_token"])["content"]["body"] == message
+call(room_path + "/event/" + quote(event["event_id"], safe=""), expected=401)
+call(room_path + "/messages?dir=b&limit=10", token=fresh_bob["access_token"])
+print("PASS: cloud history on a fresh device without old-device approval, unauthenticated history rejected")
