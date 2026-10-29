@@ -6,6 +6,8 @@ import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 
+class GatewayHttpException(val status: Int, message: String) : IllegalStateException(message)
+
 object Gateway {
     fun validateBase(input: String): String {
         val uri = URI(input.trim())
@@ -35,7 +37,7 @@ object Gateway {
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
             val json = runCatching { JSONObject(text) }.getOrDefault(JSONObject())
-            check(status in 200..299) { json.optString("detail", "Сервер вернул HTTP $status") }
+            if (status !in 200..299) throw GatewayHttpException(status, json.optString("detail", "Сервер вернул HTTP $status"))
             return json
         } finally { connection.disconnect() }
     }

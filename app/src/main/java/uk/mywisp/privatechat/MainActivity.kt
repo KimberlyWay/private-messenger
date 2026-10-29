@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
 private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
     val s by repo.state.collectAsStateWithLifecycle()
     var settings by rememberSaveable { mutableStateOf(false) }
+    var oldChats by remember { mutableStateOf(false) }
     BackHandler(enabled = settings || s.roomId != null) { if (settings) settings = false else repo.back() }
     val keyVisible = s.recoveryKey != null
     DisposableEffect(keyVisible) {
@@ -105,6 +106,15 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад")
                 }
             }, actions = {
+                if (s.roomId != null && !settings && s.alternateRoomIds.isNotEmpty()) Box {
+                    IconButton(onClick = { oldChats = true }) { Icon(Icons.Default.History, "Прежние переписки") }
+                    DropdownMenu(expanded = oldChats, onDismissRequest = { oldChats = false }) {
+                        s.alternateRoomIds.forEachIndexed { index, id ->
+                            DropdownMenuItem(text = { Text("Прежняя переписка ${index + 1}") },
+                                onClick = { oldChats = false; repo.openHistoricalRoom(id) })
+                        }
+                    }
+                }
                 if (s.roomId != null && !settings) IconButton(onClick = repo::requestVerification, enabled = !s.busy) {
                     Icon(Icons.Default.VerifiedUser, "Проверить собеседника")
                 }
@@ -121,6 +131,12 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 if (s.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (!settings && (!s.cryptoReady || !s.verified)) Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(if (!s.cryptoReady) "Шифрование настраивается…" else "Подтвердите это устройство, чтобы отправлять сообщения")
+                        TextButton(onClick = { settings = true }) { Text("Открыть безопасность") }
+                    }
+                }
                 when {
                     settings -> SettingsScreen(repo, s)
                     s.roomId != null -> ConversationScreen(repo, s)
@@ -297,7 +313,17 @@ private fun ConversationScreen(repo: MessengerRepository, s: ChatState) {
             item { TextButton(onClick = repo::older, modifier = Modifier.fillMaxWidth(), enabled = !s.busy) { Text("Загрузить предыдущие") } }
             items(s.messages, key = { it.id }) { message -> MessageBubble(repo, message) }
         }
-        Surface(tonalElevation = 3.dp) {
+        s.sendError?.let { error ->
+            Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Text(error)
+                    if (s.canRetrySend) TextButton(onClick = repo::retrySending, enabled = !s.busy) { Text("Повторить отправку") }
+                }
+            }
+        }
+        if (s.historical) FilledTonalButton(onClick = repo::openMainConversation, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+            Text("Открыть основной чат")
+        } else Surface(tonalElevation = 3.dp) {
             Column(Modifier.fillMaxWidth().padding(8.dp)) {
                 if (recording) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Mic, null, tint = MaterialTheme.colorScheme.error)
@@ -308,7 +334,7 @@ private fun ConversationScreen(repo: MessengerRepository, s: ChatState) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(text, { if (it.length <= 16_000) text = it }, Modifier.weight(1f),
                             placeholder = { Text("Сообщение") }, maxLines = 5, shape = RoundedCornerShape(28.dp))
-                        IconButton(onClick = { val original = text; repo.sendText(original) { if (text == original) text = "" } }, enabled = text.isNotBlank() && !s.busy) {
+                        IconButton(onClick = { val original = text; repo.sendText(original) { if (text == original) text = "" } }, enabled = text.isNotBlank() && !s.busy && s.cryptoReady && s.verified) {
                             Icon(Icons.AutoMirrored.Filled.Send, "Отправить")
                         }
                     }
@@ -421,7 +447,7 @@ private fun MediaDialog(file: File, kind: String, close: () -> Unit) {
 private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
     val appearance by repo.appearance.state.collectAsStateWithLifecycle()
     var name by remember(s.userId, s.displayName) { mutableStateOf(s.displayName) }
-    var security by rememberSaveable { mutableStateOf(false) }
+    var security by rememberSaveable { mutableStateOf(!s.verified) }
     var recoveryInput by remember { mutableStateOf("") }
     var logout by remember { mutableStateOf(false) }
     var avatarUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -458,6 +484,9 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState) {
         } }
         if (security) {
         item { Text(if (s.verified) "Это устройство подтверждено" else "Устройство требует подтверждения или восстановления ключей") }
+        if (!s.verified) item { FilledTonalButton(onClick = repo::requestOwnVerification, enabled = !s.busy && s.cryptoReady) {
+            Text("Подтвердить с другого устройства")
+        } }
         item { Text("Передавайте ключ восстановления только своим устройствам. Чтобы проверить собеседника, откройте чат и нажмите значок щита.") }
         item { Text("Восстановление: " + when (s.recovery) {
             "ENABLED" -> "настроено"; "DISABLED" -> "не настроено"; "INCOMPLETE" -> "требуется существующий ключ"; else -> "проверяем…"

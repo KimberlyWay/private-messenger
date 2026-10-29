@@ -49,3 +49,39 @@ response = call("/api/register", {"login": "bad", "username": [], "password": "d
 assert "do-not-echo" not in json.dumps(response)
 call("/_synapse/admin/v1/server_version", expected=404)
 print("PASS: registration, uniqueness, login, private login separation, authentication, validation redaction, blocked admin routes")
+
+# Canonical direct rooms must be shared by both accounts, including concurrent first contact.
+from concurrent.futures import ThreadPoolExecutor
+bob_name = "bob_" + suffix
+bob_login = "bob_login_" + suffix
+bob = call("/api/register", {"login": bob_login, "username": bob_name, "password": password}, expected=201)
+bob_session = call("/api/login", {"login": bob_login, "password": password})
+call("/api/chats", {"username": bob_name}, expected=401)
+requests = [(session, bob_name), (bob_session, username)] * 3
+with ThreadPoolExecutor(max_workers=6) as executor:
+    rooms = list(executor.map(lambda pair: call("/api/chats", {"username": pair[1]}, token=pair[0]["access_token"]), requests))
+room_ids = {room["room_id"] for room in rooms}
+assert len(room_ids) == 1, "Concurrent first contact created duplicate rooms"
+room_id = next(iter(room_ids))
+from urllib.parse import quote
+room_path = "/_matrix/client/v3/rooms/" + quote(room_id, safe="")
+# Either caller may win the race; the other remains invited until opening the chat.
+alice_joined = room_id in call("/_matrix/client/v3/joined_rooms", token=session["access_token"])["joined_rooms"]
+creator, invitee = (session, bob_session) if alice_joined else (bob_session, session)
+call(room_path + "/members", token=invitee["access_token"], expected=403)
+encryption = call(room_path + "/state/m.room.encryption", token=creator["access_token"])
+assert encryption["algorithm"] == "m.megolm.v1.aes-sha2"
+call("/_matrix/client/v3/join/" + quote(room_id, safe=""), {}, token=invitee["access_token"])
+assert call("/api/chats", {"username": username}, token=bob_session["access_token"])["room_id"] == room_id
+
+# Adopt a valid legacy two-person encrypted room, never a room belonging to another pair.
+carol_name = "carol_" + suffix
+carol = call("/api/register", {"login": "carol_login_" + suffix, "username": carol_name, "password": password}, expected=201)
+old = call("/_matrix/client/v3/createRoom", {
+    "is_direct": True, "preset": "private_chat", "invite": [carol["user_id"]],
+    "initial_state": [{"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]
+}, token=session["access_token"])["room_id"]
+assert call("/api/chats", {"username": carol_name, "candidate_room_ids": [old]}, token=session["access_token"])["room_id"] == old
+other = call("/api/chats", {"username": carol_name, "candidate_room_ids": [room_id]}, token=bob_session["access_token"])["room_id"]
+assert other not in (old, room_id), "An unrelated room must never be adopted"
+print("PASS: concurrent canonical DMs, encrypted room state, invite permissions, legacy adoption and pair validation")

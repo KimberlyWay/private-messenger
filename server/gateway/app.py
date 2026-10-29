@@ -11,7 +11,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, Field
 from psycopg.errors import UniqueViolation
 from psycopg_pool import AsyncConnectionPool
 
@@ -35,6 +35,9 @@ async def lifespan(app):
         await connection.execute("""CREATE TABLE IF NOT EXISTS accounts (
             login TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL,
             matrix_id TEXT UNIQUE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+        await connection.execute("""CREATE TABLE IF NOT EXISTS direct_chats (
+            user_low TEXT NOT NULL, user_high TEXT NOT NULL, room_id TEXT,
+            PRIMARY KEY(user_low, user_high), CHECK(user_low < user_high))""")
     yield
     await http.aclose()
     await pool.close()
@@ -182,3 +185,96 @@ async def find_user(username: str, request: Request):
     if row is None:
         raise HTTPException(404, "Пользователь не найден")
     return {"username": name, "user_id": row[0]}
+
+
+class DirectChatRequest(BaseModel):
+    username: str
+    candidate_room_ids: list[str] = Field(default_factory=list, max_length=8)
+
+
+async def authenticated_user(request):
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Требуется вход")
+    try:
+        response = await http.get("/_matrix/client/v3/account/whoami", headers={"Authorization": authorization})
+    except httpx.HTTPError:
+        raise HTTPException(503, "Сервер временно недоступен") from None
+    if response.status_code != 200:
+        raise HTTPException(401, "Сеанс истёк")
+    return response.json()["user_id"], {"Authorization": authorization}
+
+
+async def reusable_dm(room_id, own, peer, headers):
+    """Only adopt encrypted, joined, two-party rooms. Never trust a supplied ID."""
+    from urllib.parse import quote
+    if not room_id.startswith("!") or len(room_id) > 512:
+        return False
+    path = "/_matrix/client/v3/rooms/" + quote(room_id, safe="")
+    members = await http.get(path + "/members", headers=headers)
+    if members.status_code != 200:
+        return False
+    active = {event["state_key"]: event.get("content", {}).get("membership")
+              for event in members.json().get("chunk", [])
+              if event.get("content", {}).get("membership") in ("join", "invite")}
+    if set(active) != {own, peer} or active.get(own) != "join":
+        return False
+    encryption = await http.get(path + "/state/m.room.encryption", headers=headers)
+    return (encryption.status_code == 200 and
+            encryption.json().get("algorithm") == "m.megolm.v1.aes-sha2")
+
+
+@app.post("/api/chats")
+async def direct_chat(body: DirectChatRequest, request: Request):
+    """One canonical room per pair, even for concurrent requests from both sides."""
+    from urllib.parse import quote
+    await rate_limit(request, "chat", 120)
+    own, headers = await authenticated_user(request)
+    name = normalize(body.username.removeprefix("@"), USERNAME_RE)
+    try:
+        async with pool.connection() as connection:
+            async with connection.transaction():
+                own_account = await (await connection.execute("SELECT 1 FROM accounts WHERE matrix_id=%s", (own,))).fetchone()
+                target = await (await connection.execute("SELECT matrix_id FROM accounts WHERE username=%s", (name,))).fetchone()
+                if not own_account or not target:
+                    raise HTTPException(404, "Пользователь не найден")
+                peer = target[0]
+                if own == peer:
+                    raise HTTPException(400, "Выберите другого пользователя")
+                low, high = sorted((own, peer))
+                await connection.execute("INSERT INTO direct_chats(user_low,user_high) VALUES (%s,%s) ON CONFLICT DO NOTHING", (low, high))
+                row = await (await connection.execute("SELECT room_id FROM direct_chats WHERE user_low=%s AND user_high=%s FOR UPDATE", (low, high))).fetchone()
+                room_id = row[0]
+                if room_id is None:
+                    # A deterministic, secret-derived alias also closes the crash window
+                    # between Synapse creating a room and PostgreSQL committing its ID.
+                    local_alias = "pm_" + hmac.new(SECRET.encode(), ("direct-v1\0" + low + "\0" + high).encode(), hashlib.sha256).hexdigest()
+                    alias = "#" + local_alias + ":" + SERVER_NAME
+                    directory = await http.get("/_matrix/client/v3/directory/room/" + quote(alias, safe=""), headers=headers)
+                    if directory.status_code == 200:
+                        recovered_id = directory.json()["room_id"]
+                        if not await reusable_dm(recovered_id, own, peer, headers):
+                            # The other participant may be invited and cannot read members yet.
+                            joined = await http.post("/_matrix/client/v3/join/" + quote(recovered_id, safe=""), headers=headers, json={})
+                            if joined.status_code != 200 or not await reusable_dm(recovered_id, own, peer, headers):
+                                raise HTTPException(409, "Не удалось восстановить существующий личный чат")
+                        room_id = recovered_id
+                    elif directory.status_code != 404:
+                        directory.raise_for_status()
+                    if room_id is None:
+                        for candidate in sorted(set(body.candidate_room_ids)):
+                            if await reusable_dm(candidate, own, peer, headers):
+                                room_id = candidate
+                                break
+                    if room_id is None:
+                        created = await http.post("/_matrix/client/v3/createRoom", headers=headers, json={
+                            "room_alias_name": local_alias,
+                            "is_direct": True, "visibility": "private", "preset": "private_chat", "invite": [peer],
+                            "initial_state": [{"type": "m.room.encryption", "state_key": "",
+                                               "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]})
+                        created.raise_for_status()
+                        room_id = created.json()["room_id"]
+                    await connection.execute("UPDATE direct_chats SET room_id=%s WHERE user_low=%s AND user_high=%s", (room_id, low, high))
+                return {"room_id": room_id, "user_id": peer}
+    except httpx.HTTPError:
+        raise HTTPException(503, "Не удалось открыть личный чат. Попробуйте ещё раз; новый чат не будет создан повторно") from None
