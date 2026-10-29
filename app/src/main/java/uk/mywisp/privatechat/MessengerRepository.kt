@@ -225,10 +225,25 @@ class MessengerRepository(private val context: Context) {
             withTimeout(60_000) { current.encryption().waitForE2eeInitializationTasks() }
             refreshSecurity()
         }
-        require(state.value.verified) { "Устройство ещё не подтверждено. Перенос не выполнен." }
+        val ownIdentity = current.encryption().userIdentity(current.userId(), false)
+        require(state.value.verified || (resetLostKeys && ownIdentity?.isVerified() == true)) {
+            "Устройство ещё не подтверждено. Перенос не выполнен."
+        }
         val recovery = if (current.encryption().recoveryState() == RecoveryState.DISABLED) {
             current.encryption().enableRecovery(true, null, object : EnableRecoveryProgressListener { override fun onUpdate(status: EnableRecoveryProgress) {} })
         } else current.encryption().resetRecoveryKey()
+        if (!state.value.verified) {
+            // SDK 26.10.23 uploads reset signatures without refreshing its own
+            // device-key cache. The standard import path queries keys, checks
+            // private/public key agreement and verifies the actual signatures.
+            // Never replace this with a local "trusted" override.
+            current.encryption().recover(recovery)
+            withTimeout(60_000) {
+                while (current.encryption().verificationState() != VerificationState.VERIFIED) delay(200)
+            }
+            refreshSecurity()
+        }
+        require(state.value.verified) { "Подпись устройства ещё не подтверждена" }
         val salt = PasswordSecrets.randomSalt()
         PasswordSecrets(newPassword, salt, serverName, login).use { secrets ->
             // Persist the already encrypted envelope before changing the login credential.
