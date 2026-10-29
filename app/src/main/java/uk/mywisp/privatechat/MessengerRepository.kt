@@ -42,6 +42,7 @@ class MessengerRepository(private val context: Context) {
     private val profiles = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, UserProfile>>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val vault = Vault(context)
+    private val pendingActions = java.util.concurrent.atomic.AtomicInteger(0)
     private val actionMutex = Mutex()
     private val roomsMutex = Mutex()
     private val directPrefs = context.getSharedPreferences("direct-chats", Context.MODE_PRIVATE)
@@ -69,6 +70,10 @@ class MessengerRepository(private val context: Context) {
     private val itemLock = Any()
 
     private fun action(name: String, block: suspend () -> Unit) {
+        pendingActions.incrementAndGet()
+        // Publish the new operation synchronously: a stale failure must not look
+        // like the result of a retry before the IO coroutine gets scheduled.
+        mutable.update { it.copy(busy = true, error = null) }
         scope.launch {
             actionMutex.withLock {
                 mutable.update { it.copy(busy = true, error = null) }
@@ -84,7 +89,10 @@ class MessengerRepository(private val context: Context) {
                     val message = if (e is IllegalArgumentException || e is IllegalStateException) e.message
                         else "Не удалось выполнить действие. Проверьте подключение к серверу и настройки шифрования."
                     mutable.update { it.copy(error = message?.take(240)) }
-                } finally { mutable.update { it.copy(busy = false) } }
+                } finally {
+                    val remaining = pendingActions.decrementAndGet()
+                    mutable.update { it.copy(busy = remaining > 0) }
+                }
             }
         }
     }
