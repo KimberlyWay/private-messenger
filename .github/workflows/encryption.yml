@@ -41,12 +41,14 @@ jobs:
           script: |
             adb logcat -c
             ./gradlew --no-daemon connectedE2eAndroidTest || { adb logcat -d -v time > android-test-logcat.txt; exit 1; }
+            adb pull /sdcard/Android/data/uk.mywisp.privatechat.e2e/files/design design-previews
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: encryption-test-reports
           path: |
+            design-previews
             app/build/reports/androidTests
             android-test-logcat.txt
           retention-days: 14

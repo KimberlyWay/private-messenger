@@ -6,14 +6,18 @@ import java.net.URI
 import java.net.URL
 import java.io.ByteArrayOutputStream
 
-data class UserProfile(val name: String = "", val avatar: String? = null)
+data class UserProfile(val name: String = "", val avatar: String? = null, val status: String = "", val shape: String = "circle", val photos: List<String> = emptyList())
 
 /** Matrix profile/media requests always go to the authenticated homeserver. */
 internal object ProfileApi {
     fun get(base: String, token: String, user: String): UserProfile {
         val json = Gateway.call(base, "/_matrix/client/v3/profile/" + Gateway.escaped(user), token = token)
-        return UserProfile(json.optString("displayname", ""),
-            json.optString("avatar_url", "").takeIf { it.startsWith("mxc://") })
+        val extra = try { Gateway.call(base, "/api/profiles/" + Gateway.escaped(user), token = token) }
+        catch (e: GatewayHttpException) { if (e.status == 404) JSONObject() else throw e }
+        val photos = extra.optJSONArray("photos")
+        val avatar = json.optString("avatar_url", "").takeIf { it.startsWith("mxc://") }
+        return UserProfile(json.optString("displayname", ""), avatar, extra.optString("status"), extra.optString("avatar_shape", "circle"),
+            (listOfNotNull(avatar) + (0 until (photos?.length() ?: 0)).mapNotNull { photos?.optString(it)?.takeIf { url -> url.startsWith("mxc://") } }).distinct())
     }
 
     fun name(base: String, token: String, user: String, name: String) {
@@ -21,9 +25,16 @@ internal object ProfileApi {
             JSONObject().put("displayname", name), token, "PUT")
     }
 
+    fun details(base: String, token: String, status: String, shape: String) {
+        Gateway.call(base, "/api/profiles/me", JSONObject().put("status", status).put("avatar_shape", shape), token, "PUT")
+    }
+
     fun avatar(base: String, token: String, user: String, mxc: String?) {
+        val old = if (mxc == null) get(base, token, user).avatar else null
         Gateway.call(base, "/_matrix/client/v3/profile/${Gateway.escaped(user)}/avatar_url",
             JSONObject().put("avatar_url", mxc ?: ""), token, "PUT")
+        if (mxc != null) Gateway.call(base, "/api/profiles/me/photos", JSONObject().put("mxc", mxc), token, "PUT")
+        else if (old != null) Gateway.call(base, "/api/profiles/me/photos/remove", JSONObject().put("mxc", old), token)
     }
 
     fun upload(base: String, token: String, jpeg: ByteArray): String {

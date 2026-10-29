@@ -9,11 +9,11 @@ import time
 BASE = os.environ.get("TEST_BASE_URL", "http://127.0.0.1:8088")
 
 
-def call(path, body=None, token=None, expected=200):
+def call(path, body=None, token=None, expected=200, method=None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request(BASE + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    request = urllib.request.Request(BASE + path, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=40) as response:
             status, data = response.status, response.read()
@@ -121,3 +121,26 @@ assert call(room_path + "/event/" + quote(event["event_id"], safe=""), token=fre
 call(room_path + "/event/" + quote(event["event_id"], safe=""), expected=401)
 call(room_path + "/messages?dir=b&limit=10", token=fresh_bob["access_token"])
 print("PASS: cloud history on a fresh device without old-device approval, unauthenticated history rejected")
+
+# Lean public profiles and per-account message actions enforce ownership.
+own = session["user_id"]
+call("/api/profiles/me", {"status": "На связи", "avatar_shape": "flower"}, token=session["access_token"], method="PUT")
+public = call("/api/profiles/" + quote(own, safe=""), token=fresh_bob["access_token"])
+assert public["status"] == "На связи" and public["avatar_shape"] == "flower"
+call("/api/profiles/" + quote(own, safe=""), expected=401)
+call("/api/profiles/me", {"status": "", "avatar_shape": "invalid"}, token=session["access_token"], method="PUT", expected=400)
+call("/api/profiles/me/photos", {"mxc": "mxc://ci.invalid/not-a-profile-photo"}, token=session["access_token"], method="PUT", expected=400)
+prefs_path = "/api/messages/preferences/" + quote(room_id, safe="")
+preference = {"room_id": room_id, "event_ids": [event["event_id"]], "field": "hidden", "enabled": True}
+call("/api/messages/preferences", preference, token=bob_session["access_token"])
+assert event["event_id"] in call(prefs_path, token=fresh_bob["access_token"])["hidden"]
+assert event["event_id"] not in call(prefs_path, token=session["access_token"])["hidden"]
+call("/api/messages/preferences", {**preference, "enabled": False}, token=fresh_bob["access_token"])
+assert not call(prefs_path, token=bob_session["access_token"])["hidden"]
+call("/api/messages/preferences", {**preference, "field": "starred"}, token=bob_session["access_token"])
+assert event["event_id"] in call(prefs_path, token=fresh_bob["access_token"])["starred"]
+call("/api/messages/preferences", preference, expected=401)
+call("/api/messages/preferences", {**preference, "event_ids": ["local-transaction"]}, token=bob_session["access_token"], expected=400)
+carol_session = call("/api/login", {"login": "carol_login_" + suffix, "password": password})
+call(prefs_path, token=carol_session["access_token"], expected=403)
+print("PASS: public profile metadata, profile validation, per-account hide/undo/star synchronization and room access checks")

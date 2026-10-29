@@ -43,6 +43,16 @@ async def lifespan(app):
         await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credential_salt TEXT")
         await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pending_salt TEXT")
         await connection.execute("ALTER TABLE direct_chats ADD COLUMN IF NOT EXISTS cloud_room_id TEXT")
+        await connection.execute("""CREATE TABLE IF NOT EXISTS message_preferences (
+            user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_id TEXT NOT NULL,
+            hidden BOOLEAN NOT NULL DEFAULT false, starred BOOLEAN NOT NULL DEFAULT false,
+            PRIMARY KEY(user_id, room_id, event_id))""")
+        await connection.execute("""CREATE TABLE IF NOT EXISTS lean_profiles (
+            user_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT '',
+            avatar_shape TEXT NOT NULL DEFAULT 'circle')""")
+        await connection.execute("""CREATE TABLE IF NOT EXISTS profile_photos (
+            user_id TEXT NOT NULL, mxc TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY(user_id, mxc))""")
     yield
     await http.aclose()
     await pool.close()
@@ -381,3 +391,106 @@ async def own_auth_account(request: Request):
     if not row:
         raise HTTPException(404, "Аккаунт не найден")
     return {"login": row[0], "credential_version": row[1], "salt": row[2], "server_name": SERVER_NAME}
+
+
+AVATAR_SHAPES = ("circle", "squircle", "flower", "clover", "pebble")
+
+
+class PublicProfileUpdate(BaseModel):
+    status: str = Field(default="", max_length=120)
+    avatar_shape: str = "circle"
+
+
+@app.get("/api/profiles/{user_id}")
+async def public_profile(user_id: str, request: Request):
+    await authenticated_user(request)
+    async with pool.connection() as connection:
+        exists = await (await connection.execute("SELECT 1 FROM accounts WHERE matrix_id=%s", (user_id,))).fetchone()
+        if not exists:
+            raise HTTPException(404, "Профиль не найден")
+        row = await (await connection.execute("SELECT status,avatar_shape FROM lean_profiles WHERE user_id=%s", (user_id,))).fetchone()
+        photos = await (await connection.execute("SELECT mxc FROM profile_photos WHERE user_id=%s ORDER BY created_at DESC LIMIT 12", (user_id,))).fetchall()
+    return {"status": row[0] if row else "", "avatar_shape": row[1] if row else "circle", "photos": [r[0] for r in photos]}
+
+
+@app.put("/api/profiles/me")
+async def update_public_profile(body: PublicProfileUpdate, request: Request):
+    own, _ = await authenticated_user(request)
+    if body.avatar_shape not in AVATAR_SHAPES:
+        raise HTTPException(400, "Неизвестная форма аватара")
+    async with pool.connection() as connection:
+        await connection.execute("INSERT INTO lean_profiles(user_id,status,avatar_shape) VALUES (%s,%s,%s) ON CONFLICT(user_id) DO UPDATE SET status=EXCLUDED.status,avatar_shape=EXCLUDED.avatar_shape", (own, body.status.strip(), body.avatar_shape))
+    return {"ok": True}
+
+
+class ProfilePhoto(BaseModel):
+    mxc: str = Field(max_length=1024)
+
+
+@app.put("/api/profiles/me/photos")
+async def archive_profile_photo(body: ProfilePhoto, request: Request):
+    from urllib.parse import quote
+    own, headers = await authenticated_user(request)
+    # Only archive a photo already set as this account's actual Matrix avatar.
+    response = await http.get("/_matrix/client/v3/profile/" + quote(own, safe=""), headers=headers)
+    if response.status_code != 200 or response.json().get("avatar_url") != body.mxc or not body.mxc.startswith("mxc://"):
+        raise HTTPException(400, "Сначала установите это фото в профиле")
+    async with pool.connection() as connection:
+        await connection.execute("INSERT INTO profile_photos(user_id,mxc) VALUES (%s,%s) ON CONFLICT(user_id,mxc) DO UPDATE SET created_at=now()", (own, body.mxc))
+        await connection.execute("DELETE FROM profile_photos WHERE user_id=%s AND mxc NOT IN (SELECT mxc FROM profile_photos WHERE user_id=%s ORDER BY created_at DESC LIMIT 12)", (own, own))
+    return {"ok": True}
+
+
+@app.post("/api/profiles/me/photos/remove")
+async def remove_profile_photo(body: ProfilePhoto, request: Request):
+    own, _ = await authenticated_user(request)
+    async with pool.connection() as connection:
+        await connection.execute("DELETE FROM profile_photos WHERE user_id=%s AND mxc=%s", (own, body.mxc))
+    return {"ok": True}
+
+
+class MessagePreferenceUpdate(BaseModel):
+    room_id: str = Field(min_length=1, max_length=512)
+    event_ids: list[str] = Field(min_length=1, max_length=100)
+    field: str
+    enabled: bool = True
+
+
+async def joined_room(own, room_id, headers):
+    from urllib.parse import quote
+    path = "/_matrix/client/v3/rooms/" + quote(room_id, safe="")
+    response = await http.get(path + "/state/m.room.member/" + quote(own, safe=""), headers=headers)
+    if response.status_code != 200 or response.json().get("membership") != "join":
+        raise HTTPException(403, "Нет доступа к переписке")
+    return path
+
+
+@app.get("/api/messages/preferences/{room_id}")
+async def message_preferences(room_id: str, request: Request):
+    own, headers = await authenticated_user(request)
+    await joined_room(own, room_id, headers)
+    async with pool.connection() as connection:
+        rows = await (await connection.execute("SELECT event_id,hidden,starred FROM message_preferences WHERE user_id=%s AND room_id=%s", (own, room_id))).fetchall()
+    return {"hidden": [r[0] for r in rows if r[1]], "starred": [r[0] for r in rows if r[2]]}
+
+
+@app.post("/api/messages/preferences")
+async def set_message_preferences(body: MessagePreferenceUpdate, request: Request):
+    from urllib.parse import quote
+    own, headers = await authenticated_user(request)
+    path = await joined_room(own, body.room_id, headers)
+    if body.field not in ("hidden", "starred"):
+        raise HTTPException(400, "Неизвестное действие")
+    ids = sorted(set(body.event_ids))
+    for event_id in ids:
+        if not event_id.startswith("$") or len(event_id) > 512:
+            raise HTTPException(400, "Дождитесь отправки сообщения")
+        event = await http.get(path + "/event/" + quote(event_id, safe=""), headers=headers)
+        if event.status_code != 200 or event.json().get("type") != "m.room.message":
+            raise HTTPException(404, "Сообщение не найдено")
+    # The only interpolated SQL token is selected from the fixed allowlist above.
+    async with pool.connection() as connection:
+        async with connection.transaction():
+            for event_id in ids:
+                await connection.execute(f"INSERT INTO message_preferences(user_id,room_id,event_id,{body.field}) VALUES (%s,%s,%s,%s) ON CONFLICT(user_id,room_id,event_id) DO UPDATE SET {body.field}=EXCLUDED.{body.field}", (own, body.room_id, event_id, body.enabled))
+    return {"ok": True}

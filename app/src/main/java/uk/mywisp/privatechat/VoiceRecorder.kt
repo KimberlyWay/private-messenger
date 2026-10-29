@@ -41,6 +41,8 @@ class VoiceRecorder(private val context: Context) {
         return result
     }
 
+    fun amplitude(): Float = runCatching { (recorder?.maxAmplitude ?: 0) / 32767f }.getOrDefault(0f).coerceIn(0f, 1f)
+
     fun cancel() {
         recorder?.let { runCatching { it.stop() }; it.release() }
         recorder = null

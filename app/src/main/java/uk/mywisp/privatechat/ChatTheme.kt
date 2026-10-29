@@ -80,7 +80,8 @@ fun PrivateTheme(appearance: Appearance = Appearance(), content: @Composable () 
             }
         }
     }
-    CompositionLocalProvider(LocalAppearance provides appearance) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    CompositionLocalProvider(LocalAppearance provides appearance, androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density * appearance.uiScale, density.fontScale)) {
         MaterialExpressiveTheme(colorScheme = scheme, content = content)
     }
 }
