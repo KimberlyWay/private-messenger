@@ -21,7 +21,12 @@ data class ChatRoom(val id: String, val name: String, val invited: Boolean, val 
 data class Attachment(val source: MediaSource, val name: String, val mime: String, val kind: String)
 data class ChatMessage(val id: String, val sender: String, val own: Boolean, val time: Long,
     val text: String, val attachment: Attachment? = null, val status: String = "", val trustWarning: String? = null)
+enum class ConnectionStatus(val label: String) {
+    CONNECTING("Подключение…"), UPDATING("Обновление…"), CONNECTED("Подключено"), OFFLINE("Нет соединения"), SIGNED_OUT("Войдите снова")
+}
+
 data class ChatState(
+    val connection: ConnectionStatus = ConnectionStatus.CONNECTING, val liveNotifications: Boolean = true,
     val loading: Boolean = true, val busy: Boolean = false, val error: String? = null,
     val userId: String? = null, val server: String = "", val rooms: List<ChatRoom> = emptyList(),
     val roomId: String? = null, val roomName: String = "", val peerId: String? = null,
@@ -52,7 +57,21 @@ class MessengerRepository(private val context: Context) {
     private val mutable = MutableStateFlow(ChatState())
     val state = mutable.asStateFlow()
     private var client: Client? = null
-    private var sync: TaskHandle? = null
+    private var syncJob: Job? = null
+    private val syncMutex = Mutex()
+    @Volatile private var lastSyncAt = 0L
+    @Volatile private var foreground = false
+    private val notices = MessageNotifications(context)
+    private val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+    private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) { resumeConnection() }
+        override fun onLost(network: android.net.Network) {
+            if (connectivity.activeNetwork == null && client != null) {
+                mutable.update { it.copy(connection = ConnectionStatus.OFFLINE) }
+                diagnostics.record("WARNING", "NETWORK_LOST")
+            }
+        }
+    }
     private var timeline: Timeline? = null
     private var listener: TaskHandle? = null
     private var sessionData: JSONObject? = null
@@ -132,7 +151,7 @@ class MessengerRepository(private val context: Context) {
 
     private suspend fun connect(data: JSONObject) {
         closeActiveRoom()
-        sync?.cancel()
+        syncJob?.cancelAndJoin()
         client?.close()
         val base = Gateway.validateBase(data.getString("homeserver"))
         val directory = File(context.filesDir, "matrix/" + data.getString("directory")).apply { mkdirs() }
@@ -158,21 +177,71 @@ class MessengerRepository(private val context: Context) {
             if (key.startsWith(ownPrefix) && value is String) canonical[key.removePrefix(ownPrefix)] = value
         }
         mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base) }
-        // Cloud messages do not wait for E2EE initialization or device approval.
-        try { withTimeout(30_000) { built.syncOnceV2(SyncSettingsV2(timeoutMs = 0u)) } }
-        catch (e: Exception) {
-            if (e is CancellationException && e !is TimeoutCancellationException) throw e
-        }
-        sync = built.syncV2(SyncSettingsV2(), object : SyncListenerV2 {
-            override fun onUpdate(response: SyncResponseV2) {
-                scope.launch { try { refreshRooms() } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    diagnostics.record("WARNING", "SYNC_STATE_REFRESH_FAILED", error = e)
-                } }
+        mutable.update { it.copy(liveNotifications = notices.enabled) }
+        built.registerNotificationHandler(object : SyncNotificationListener {
+            override fun onNotification(notification: NotificationItem, roomId: String) {
+                if (client !== built) return
+                notices.received(notification.rawEvent, roomId, notification.roomInfo.displayName, built.userId(),
+                    foreground && state.value.roomId == roomId)
             }
         })
-        refreshRooms()
+        startSync(built)
         runCatching { refreshProfile() }
+    }
+
+    @Synchronized private fun startSync(current: Client) {
+        syncJob?.cancel()
+        mutable.update { it.copy(connection = ConnectionStatus.CONNECTING) }
+        syncJob = scope.launch {
+            syncMutex.withLock {
+                var first = true
+                var retry = 2_000L
+                while (isActive && client === current) {
+                    try {
+                        if (first) mutable.update { it.copy(connection = ConnectionStatus.UPDATING) }
+                        withTimeout(45_000) { current.syncOnceV2(SyncSettingsV2(timeoutMs = if (first) 0uL else 15_000uL)) }
+                        if (client !== current) break
+                        lastSyncAt = android.os.SystemClock.elapsedRealtime()
+                        val changed = state.value.connection != ConnectionStatus.CONNECTED
+                        mutable.update { it.copy(connection = ConnectionStatus.CONNECTED) }
+                        if (changed) diagnostics.record("INFO", "SYNC_CONNECTED")
+                        first = false; retry = 2_000
+                        notices.synced(current.userId())
+                        try { refreshRooms() } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                            diagnostics.record("WARNING", "SYNC_STATE_REFRESH_FAILED", error = e)
+                        }
+                    } catch (e: Exception) {
+                        if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                        if (client !== current) break
+                        mutable.update { it.copy(connection = ConnectionStatus.OFFLINE) }
+                        diagnostics.record("WARNING", "SYNC_RETRY", "delayMs=$retry", e)
+                        delay(retry); retry = (retry * 2).coerceAtMost(30_000)
+                        mutable.update { it.copy(connection = ConnectionStatus.CONNECTING) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun resumeConnection(force: Boolean = false) {
+        val current = client ?: return
+        if (force || syncJob?.isActive != true || state.value.connection == ConnectionStatus.OFFLINE ||
+            android.os.SystemClock.elapsedRealtime() - lastSyncAt > 35_000) {
+            diagnostics.record("INFO", "SYNC_RECONNECT")
+            startSync(current)
+        }
+    }
+
+    fun setForeground(active: Boolean) {
+        foreground = active
+        if (active) { notices.clearMessages(); resumeConnection() }
+    }
+
+    fun setLiveNotifications(enabled: Boolean) {
+        notices.enabled = enabled
+        mutable.update { it.copy(liveNotifications = enabled) }
+        if (!enabled) context.stopService(android.content.Intent(context, LiveSyncService::class.java))
     }
 
     private suspend fun refreshRooms() {
@@ -559,20 +628,25 @@ class MessengerRepository(private val context: Context) {
     }
     fun dismissError() { mutable.update { it.copy(error = null) } }
     fun refresh() = action("refresh") {
+        resumeConnection(force = true)
         timeline?.fetchMembers()
         refreshRooms(); profiles.clear(); runCatching { refreshProfile() }
     }
     fun logout() = action("logout") {
         val c = client ?: return@action
         visibilityJob?.cancel(); visibilityJob = null
+        syncJob?.cancelAndJoin(); syncJob = null
         c.logout()
-        closeActiveRoom(); sync?.cancel(); sync = null
+        closeActiveRoom(); syncJob?.cancelAndJoin(); syncJob = null
         c.close(); client = null; vault.clear(); sessionData = null; profiles.clear(); canonical.clear(); knownPeers.clear(); queueFailures.clear(); allRooms = emptyList()
         File(context.cacheDir, "profile-photos").deleteRecursively()
+        notices.clearMessages()
+        context.stopService(android.content.Intent(context, LiveSyncService::class.java))
         mutable.value = ChatState(loading = false)
     }
 
     init {
+        connectivity.registerDefaultNetworkCallback(networkCallback)
         scope.launch {
             try {
                 vault.load()?.let { connect(it) }

@@ -26,6 +26,10 @@ class RegistrationUiTest {
 
 
     @Test fun chosenPrivateLoginAndPublicUsernameCreateARealAccount() {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.executeShellCommand("pm grant ${instrumentation.targetContext.packageName} android.permission.POST_NOTIFICATIONS").use {
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes()
+        }
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
         val username = "ui_$suffix"
         val repo = (ui.activity.application as ChatApplication).repository
