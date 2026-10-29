@@ -10,4 +10,4 @@ Cloud rooms are private two-person rooms with shared history. Authenticated devi
 
 Pre-0.5 encrypted messages cannot be converted without their original decryption keys. They are not adopted as cloud rooms. The new client hides these rooms and the server keeps a separate canonical cloud room per pair. No existing accounts, encrypted rooms or databases are deleted by this update.
 
-Never post real passwords, access tokens, signing keys, server configuration or message logs in issues. This is an experimental alpha without an independent audit. Background push remains incomplete. Preserve the existing APK signing key during updates.
+Never post real passwords, access tokens, signing keys, server configuration or message logs in issues. This is an experimental alpha without an independent audit. Background messaging uses a user-visible remoteMessaging foreground service, not FCM. Android force-stop and device power restrictions can prevent delivery until the app is opened. Preserve the existing APK signing key during updates.

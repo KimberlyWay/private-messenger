@@ -31,7 +31,10 @@ class ConversationFlowTest {
     }
 
     @Test fun cloudHistoryAndAttachmentsSurviveLoginOnMultipleDevices() = runBlocking(Dispatchers.IO) {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        fun shell(command: String) { instrumentation.uiAutomation.executeShellCommand(command).use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() } }
+        val context = instrumentation.targetContext
+        shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
         val leftContext = AccountContext(context, "conversation_a_$suffix")
         val rightContext = AccountContext(context, "conversation_b_$suffix")
@@ -63,6 +66,19 @@ class ConversationFlowTest {
             }
             noError(alice, bob); assertNull(alice.state.value.sendError)
             assertTrue(bob.state.value.messages.any { it.text == text })
+            val notificationManager = context.getSystemService(android.app.NotificationManager::class.java)
+            until("Incoming message creates an Android notification") { notificationManager.activeNotifications.any { it.tag == "message:$id" } }
+            until("Both clients report actual successful sync") { alice.state.value.connection == ConnectionStatus.CONNECTED && bob.state.value.connection == ConnectionStatus.CONNECTED }
+            try {
+                shell("svc wifi disable"); shell("svc data disable")
+                until("No network is shown as offline") { bob.state.value.connection == ConnectionStatus.OFFLINE }
+            } finally { shell("svc wifi enable"); shell("svc data enable") }
+            until("Network restoration reconnects without app restart") { bob.state.value.connection == ConnectionStatus.CONNECTED && alice.state.value.connection == ConnectionStatus.CONNECTED }
+            bob.setForeground(true)
+            val resumed = "after-network-" + UUID.randomUUID()
+            alice.sendText(resumed)
+            until("Live incoming event after reconnect") { bob.state.value.messages.any { it.text == resumed } }
+            noError(alice, bob)
             val reply = "reply-" + UUID.randomUUID()
             bob.sendText(reply)
             until("Alice receives the reply") { alice.state.value.messages.any { it.text == reply && !it.own } || bob.state.value.error != null || bob.state.value.sendError != null }

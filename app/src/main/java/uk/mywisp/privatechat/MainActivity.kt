@@ -70,6 +70,21 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) LiveSyncService.start(this)
+    }
+    fun enableLiveNotifications() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            val prefs = getSharedPreferences("live-notifications", MODE_PRIVATE)
+            if (!prefs.getBoolean("permission_asked", false)) {
+                prefs.edit().putBoolean("permission_asked", true).apply()
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else LiveSyncService.start(this)
+    }
+    override fun onStart() { super.onStart(); (application as ChatApplication).repository.setForeground(true) }
+    override fun onStop() { (application as ChatApplication).repository.setForeground(false); super.onStop() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -84,6 +99,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
     val s by repo.state.collectAsStateWithLifecycle()
+    LaunchedEffect(s.userId, s.liveNotifications) {
+        if (s.userId != null && s.liveNotifications) (activity as MainActivity).enableLiveNotifications()
+    }
     var settings by rememberSaveable { mutableStateOf(false) }
     var oldChats by remember { mutableStateOf(false) }
     var diagnostics by rememberSaveable { mutableStateOf(false) }
@@ -97,7 +115,15 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
         Scaffold(topBar = {
             TopAppBar(colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface), title = { Column {
                 Text(if (settings) "Профиль" else if (s.roomId != null) s.roomName else "Чаты", maxLines = 1)
-                if (s.roomId != null && !settings) Text("Облачный чат · HTTPS", style = MaterialTheme.typography.labelSmall)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val dot = when (s.connection) {
+                        ConnectionStatus.CONNECTED -> Color(0xFF2EAA59)
+                        ConnectionStatus.OFFLINE, ConnectionStatus.SIGNED_OUT -> Color(0xFFD94040)
+                        else -> Color(0xFFE4A72D)
+                    }
+                    Box(Modifier.size(8.dp).background(dot, CircleShape))
+                    Text(s.connection.label, style = MaterialTheme.typography.labelSmall)
+                }
             } }, navigationIcon = {
                 if (settings || s.roomId != null) IconButton(onClick = { if (diagnostics) diagnostics = false else if (settings) settings = false else repo.back() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад")
@@ -453,9 +479,16 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState, openDiagnost
                 }
             }
         }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Живые уведомления", Modifier.weight(1f))
+                Switch(s.liveNotifications, { repo.setLiveNotifications(it) })
+            }
+            Text("Поддерживает связь в фоне с постоянным уведомлением Android. Разрешите уведомления в настройках приложения. После принудительной остановки откройте приложение снова.", style = MaterialTheme.typography.bodySmall)
+        }
         appearanceItems(repo.appearance, appearance)
         item { HorizontalDivider() }
-        item { Text("Фото и видео до 50 МБ. Синхронизация работает, пока приложение запущено. Доставка уведомлений при закрытом приложении пока не подключена.") }
+        item { Text("Фото и видео до 50 МБ. Для получения сообщений в фоне включите живые уведомления.") }
         item { FilledTonalButton(onClick = openDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("Диагностика и журнал") } }
         item { OutlinedButton(onClick = { logout = true }) { Text("Выйти из аккаунта") } }
     }

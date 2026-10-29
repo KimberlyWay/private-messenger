@@ -31,7 +31,7 @@ internal class DiagnosticJournal(context: Context) {
     fun record(level: String, code: String, detail: String = "", error: Throwable? = null, immediate: Boolean = false) {
         val frames = error?.let {
             // Exception messages often contain tokens or server response bodies: omit them entirely.
-            "\n" + it.javaClass.simpleName + "\n" + it.stackTrace.filter { frame -> frame.className.startsWith("uk.mywisp.privatechat") }
+            "\n" + it.javaClass.simpleName + " cause=" + (it.cause?.javaClass?.simpleName ?: "none") + "\n" + it.stackTrace.filter { frame -> frame.className.startsWith("uk.mywisp.privatechat") }
                 .take(10).joinToString("\n") { frame -> "${frame.className}.${frame.methodName}(${frame.fileName}:${frame.lineNumber})" }
         }.orEmpty()
         synchronized(lock) {
