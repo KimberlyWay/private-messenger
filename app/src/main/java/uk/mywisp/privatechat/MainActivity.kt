@@ -89,11 +89,6 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
     var diagnostics by rememberSaveable { mutableStateOf(false) }
     var deleteChat by remember { mutableStateOf(false) }
     BackHandler(enabled = diagnostics || settings || s.roomId != null) { if (diagnostics) diagnostics = false else if (settings) settings = false else repo.back() }
-    val keyVisible = s.recoveryKey != null
-    DisposableEffect(keyVisible) {
-        if (keyVisible) activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose { if (keyVisible) activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
-    }
     if (s.loading) {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) { LoadingIndicator() }
     } else if (s.userId == null) {
@@ -102,7 +97,7 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
         Scaffold(topBar = {
             TopAppBar(colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface), title = { Column {
                 Text(if (settings) "Профиль" else if (s.roomId != null) s.roomName else "Чаты", maxLines = 1)
-                if (s.roomId != null && !settings) Text("Сквозное шифрование", style = MaterialTheme.typography.labelSmall)
+                if (s.roomId != null && !settings) Text("Облачный чат · HTTPS", style = MaterialTheme.typography.labelSmall)
             } }, navigationIcon = {
                 if (settings || s.roomId != null) IconButton(onClick = { if (diagnostics) diagnostics = false else if (settings) settings = false else repo.back() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад")
@@ -117,9 +112,6 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
                         }
                     }
                 }
-                if (s.roomId != null && !settings) IconButton(onClick = repo::requestVerification, enabled = !s.busy) {
-                    Icon(Icons.Default.VerifiedUser, "Проверить собеседника")
-                }
                 IconButton(onClick = repo::refresh, enabled = !s.busy) { Icon(Icons.Default.Refresh, "Обновить") }
                 if (!settings) IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Настройки") }
             })
@@ -133,12 +125,6 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 if (s.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (!settings && (!s.cryptoReady || !s.verified)) Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        Text(if (!s.cryptoReady) "Шифрование настраивается…" else "Подтвердите это устройство, чтобы отправлять сообщения")
-                        TextButton(onClick = { settings = true }) { Text("Открыть безопасность") }
-                    }
-                }
                 when {
                     diagnostics -> DiagnosticsScreen(repo.diagnostics) { diagnostics = false }
                     settings -> SettingsScreen(repo, s) { diagnostics = true }
@@ -154,35 +140,11 @@ private fun Messenger(repo: MessengerRepository, activity: ComponentActivity) {
         dismissButton = { TextButton(onClick = { deleteChat = false }) { Text("Отмена") } })
     s.error?.let { error -> AlertDialog(onDismissRequest = repo::dismissError, title = { Text("Не удалось выполнить действие") },
         text = { Text(error) }, confirmButton = { TextButton(onClick = repo::dismissError) { Text("Понятно") } }) }
-    s.recoveryKey?.let { key ->
-        val context = LocalContext.current
-        AlertDialog(onDismissRequest = {}, title = { Text("Сохраните ключ восстановления") },
-            text = { Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Он нужен для истории на новом устройстве. Сервер не сможет восстановить его за вас. Сохраните ключ в менеджере паролей.")
-                Text(key, fontWeight = FontWeight.Bold)
-            } }, dismissButton = { TextButton(onClick = {
-                val clip = ClipData.newPlainText("Ключ восстановления", key)
-                clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
-            }) { Text("Скопировать") } }, confirmButton = { TextButton(onClick = repo::hideRecovery) { Text("Я сохранил ключ") } })
-    }
-    s.verification?.let { prompt -> AlertDialog(onDismissRequest = repo::cancelVerification,
-        title = { Text(prompt.title) }, text = { Text(prompt.content, fontSize = if (prompt.stage == "compare") 26.sp else 16.sp) },
-        confirmButton = {
-            when (prompt.stage) {
-                "request" -> TextButton(onClick = repo::acceptVerification) { Text("Принять") }
-                "compare" -> TextButton(onClick = repo::approveVerification) { Text("Совпадают") }
-                "done" -> TextButton(onClick = repo::closeVerification) { Text("Закрыть") }
-            }
-        }, dismissButton = { if (prompt.stage != "done") TextButton(onClick = repo::cancelVerification) {
-            Text(if (prompt.stage == "compare") "Не совпадают" else "Отмена")
-        } }) }
 }
 
 @Composable
 private fun AuthenticationScreen(repo: MessengerRepository, s: ChatState) {
     var register by rememberSaveable { mutableStateOf(false) }
-    var legacy by rememberSaveable { mutableStateOf(false) }
     var login by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     // Passwords deliberately do not use rememberSaveable.
@@ -200,18 +162,13 @@ private fun AuthenticationScreen(repo: MessengerRepository, s: ChatState) {
             visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             supportingText = { if (register) Text("От 12 символов, до 72 байт UTF-8") }) }
         item { Button(onClick = {
-            if (legacy && !register) repo.authenticateLegacy(BuildConfig.DEFAULT_SERVER, login, password)
-            else repo.authenticate(BuildConfig.DEFAULT_SERVER, login, username, password, register)
+            repo.authenticate(BuildConfig.DEFAULT_SERVER, login, username, password, register)
             password = ""
         }, enabled = !s.busy && login.isNotBlank() && password.isNotBlank() && (!register || username.isNotBlank()),
             modifier = Modifier.fillMaxWidth().height(56.dp)) { Text(if (register) "Зарегистрироваться" else "Войти") } }
         item { TextButton(onClick = { register = !register }, enabled = !s.busy) {
             Text(if (register) "Уже есть аккаунт — войти" else "Создать аккаунт")
         } }
-        if (!register) item { TextButton(onClick = { legacy = !legacy }, enabled = !s.busy) {
-            Text(if (legacy) "Обычный защищённый вход" else "Вход в аккаунт из старой версии")
-        } }
-        if (legacy && !register) item { Text("После входа настройте восстановление истории в профиле. Режим старой версии использует прежний способ авторизации.") }
         if (s.busy) item { CircularProgressIndicator() }
     }
 }
@@ -347,7 +304,7 @@ private fun ConversationScreen(repo: MessengerRepository, s: ChatState) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(text, { if (it.length <= 16_000) text = it }, Modifier.weight(1f),
                             placeholder = { Text("Сообщение") }, maxLines = 5, shape = RoundedCornerShape(28.dp))
-                        IconButton(onClick = { val original = text; repo.sendText(original) { if (text == original) text = "" } }, enabled = text.isNotBlank() && !s.busy && s.cryptoReady && s.verified) {
+                        IconButton(onClick = { val original = text; repo.sendText(original) { if (text == original) text = "" } }, enabled = text.isNotBlank() && !s.busy) {
                             Icon(Icons.AutoMirrored.Filled.Send, "Отправить")
                         }
                     }
@@ -460,10 +417,7 @@ private fun MediaDialog(file: File, kind: String, close: () -> Unit) {
 private fun SettingsScreen(repo: MessengerRepository, s: ChatState, openDiagnostics: () -> Unit) {
     val appearance by repo.appearance.state.collectAsStateWithLifecycle()
     var name by remember(s.userId, s.displayName) { mutableStateOf(s.displayName) }
-    var security by rememberSaveable { mutableStateOf(!s.verified) }
-    var recoveryInput by remember { mutableStateOf("") }
     var logout by remember { mutableStateOf(false) }
-    var recoverySetup by remember { mutableStateOf(false) }
     var avatarUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> avatarUri = uri }
     val username = s.userId.orEmpty().substringBefore(':')
@@ -493,46 +447,21 @@ private fun SettingsScreen(repo: MessengerRepository, s: ChatState, openDiagnost
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("История на любом телефоне", style = MaterialTheme.typography.titleMedium)
-                    Text(if (s.managedRecovery) when (s.backupStatus) {
-                        "ready" -> "Ключи сохранены. На новом телефоне достаточно логина и пароля."
-                        "syncing" -> "Сохраняем ключи новых сообщений…"
-                        else -> "Не удалось обновить копию. Проверьте подключение перед удалением приложения."
-                    } else "Настройте восстановление истории по паролю без обязательного хранения отдельного ключа.")
-                    if (!s.managedRecovery) FilledTonalButton(onClick = { recoverySetup = true }, enabled = !s.busy && s.cryptoReady) { Text("Настроить восстановление") }
-                    TextButton(onClick = repo::retryRecoveryUpload, enabled = !s.busy) { Text("Обновить копию ключей") }
+                    Text("История на любом устройстве", style = MaterialTheme.typography.titleMedium)
+                    Text("Войдите с тем же логином и паролем — сообщения и вложения загрузятся с сервера автоматически.")
+                    Text("Соединение защищено HTTPS/TLS. Сообщения хранятся на сервере и доступны его владельцу.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
         appearanceItems(repo.appearance, appearance)
         item { HorizontalDivider() }
-        item { FilledTonalButton(onClick = { security = !security }, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.VerifiedUser, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
-            Text(if (security) "Скрыть настройки безопасности" else "Безопасность и восстановление")
-        } }
-        if (security) {
-        item { Text(if (s.verified) "Это устройство подтверждено" else "Устройство требует подтверждения или восстановления ключей") }
-        if (!s.verified) item { FilledTonalButton(onClick = repo::requestOwnVerification, enabled = !s.busy && s.cryptoReady) {
-            Text("Подтвердить с другого устройства")
-        } }
-        item { Text("Передавайте ключ восстановления только своим устройствам. Чтобы проверить собеседника, откройте чат и нажмите значок щита.") }
-        item { Text("Восстановление: " + when (s.recovery) {
-            "ENABLED" -> "настроено"; "DISABLED" -> "не настроено"; "INCOMPLETE" -> "требуется существующий ключ"; else -> "проверяем…"
-        }) }
-        if (s.recovery == "DISABLED" && s.verified) item { Button(onClick = repo::createRecovery, enabled = !s.busy) { Text("Создать ключ восстановления") } }
-        item { OutlinedTextField(recoveryInput, { recoveryInput = it }, Modifier.fillMaxWidth(), label = { Text("Существующий ключ восстановления") },
-            visualTransformation = PasswordVisualTransformation(), maxLines = 4) }
-        item { FilledTonalButton(onClick = { repo.recover(recoveryInput); recoveryInput = "" }, enabled = recoveryInput.isNotBlank() && !s.busy) { Text("Восстановить ключи") } }
-        }
-        item { HorizontalDivider() }
         item { Text("Фото и видео до 50 МБ. Синхронизация работает, пока приложение запущено. Доставка уведомлений при закрытом приложении пока не подключена.") }
         item { FilledTonalButton(onClick = openDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("Диагностика и журнал") } }
         item { OutlinedButton(onClick = { logout = true }) { Text("Выйти из аккаунта") } }
     }
-    if (recoverySetup) RecoverySetupDialog(repo, s.verified) { recoverySetup = false }
     avatarUri?.let { uri -> AvatarEditor(uri, { avatarUri = null }, repo::setAvatarJpeg) }
     if (logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("Выйти?") },
-        text = { Text(if (s.managedRecovery) "После входа тем же логином и паролем ключи будут восстановлены из зашифрованной копии." else "Для старой истории понадобится ключ восстановления или доверенное устройство. Сначала можно настроить восстановление по паролю.") },
+        text = { Text("После входа с тем же логином и паролем история загрузится с сервера автоматически.") },
         confirmButton = { TextButton(onClick = { logout = false; repo.logout() }) { Text("Выйти") } },
         dismissButton = { TextButton(onClick = { logout = false }) { Text("Остаться") } })
 }

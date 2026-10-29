@@ -1,58 +1,9 @@
-# История по логину и паролю
+# Cloud history and login
 
-В 0.4.0 стандартный клиент использует `pm-password-v2`. Это клиентская защита
-штатного recovery key Matrix, а не новый протокол шифрования сообщений.
+Starting with 0.5.0, sign in on any device using the same login and password. Messages and attachments load from the server without recovery keys, another phone or a separate account migration flow.
 
-## Ключи и вход
+Deploy the updated server gateway and update both Android clients together. The client checks the cloud capability on login and explains when the server needs updating. The database adds a nullable `cloud_room_id` column automatically; old room references and account credentials are preserved. New cloud rooms use separate deterministic aliases, so encrypted rooms are never reused accidentally.
 
-Клиент создаёт случайную соль 32 байта для аккаунта. PBKDF2-HMAC-SHA256 с 600000
-итераций получает 32-байтовый master из человеческого пароля; соль KDF — SHA-256
-от случайной соли и контекста `PrivateMessenger/password-v2`, постоянного имени
-сервера Matrix и нормализованного приватного логина. HMAC-SHA256 с разными
-метками выводит два независимых значения: производный пароль аутентификации
-Synapse и 32-байтовый ключ шифрования копии.
+Old encrypted history requires old keys and is not automatically copied. The new history starts in cloud rooms. Existing credentials of both earlier formats work through the same login form.
 
-На VPS передаётся только производный секрет авторизации, не человеческий пароль
-и не ключ копии. Клиент создаёт штатную копию Matrix SDK и шифрует recovery key
-через AES-256-GCM с новым случайным nonce 12 байт. Версия, имя сервера и Matrix
-user ID связаны с копией через AAD. Конверт сохраняется в приватном account data
-`uk.mywisp.password_recovery.v1`. На новом телефоне вход по паролю позволяет
-расшифровать конверт и передать recovery key штатному SDK.
-
-Параметры KDF закреплены в клиенте, неизвестные версии не принимаются. Обычный
-вход не откатывается автоматически к пересылке исходного пароля. Повреждённый
-конверт, неверный пароль и подмена user ID отвергаются. Секреты не пишутся в
-диагностический журнал. Master и ключ конверта очищаются из byte arrays после
-использования; JVM строки могут оставаться до сборки мусора.
-
-Это не PAKE. Сервер, наблюдающий производный пароль, может проверять догадки
-о слабом человеческом пароле офлайн. Соль и KDF удорожают перебор, но не заменяют
-стойкий пароль. Независимого аудита реализации ещё не было.
-
-## Старые аккаунты
-
-Одноразовый перенос в профиле требует текущий и **другой новый** пароль.
-Сначала клиент подтверждает текущий пароль. Доступные старые ключи сохраняются
-через штатный SDK; existing recovery key можно импортировать до переноса.
-При полном отсутствии ключей и другого доверенного устройства новая
-криптографическая идентичность создаётся только с отдельным подтверждением
-пользователя. Потерянная старая история при этом не восстанавливается.
-
-Соль переноса сохраняется как pending до изменения пароля в Synapse. Вход
-поддерживает активную и pending соль, чтобы закончить перенос после сбоя между
-Synapse и PostgreSQL. Зашифрованный конверт сохраняется локально до запроса
-изменения пароля и повторно загружается после восстановления соединения.
-Прерванный перенос завершается на исходном устройстве тем же новым паролем.
-
-## Синхронизация и ограничения
-
-SDK автоматически загружает новые ключи истории. Приложение показывает состояние
-копии и дожидается её загрузки при обычном выходе. Перед удалением приложения
-дождитесь «Ключи сохранены». Удаление до завершения сетевой загрузки может
-утратить последние локальные ключи: не существует способа восстановить данные,
-которые не успели покинуть единственное устройство.
-
-Если забыт пароль и не осталось доверенного устройства или добровольно
-сохранённого recovery key, почтовый сброс сможет восстановить аккаунт, но не
-расшифровать старую копию. Почтовый сброс и смена пароля v2 пока не реализованы.
-Ограничения происхождения старых Matrix v1 backup-сессий описаны в SECURITY.md.
+Cloud history is protected in transit by HTTPS/TLS, and is readable by the server operator. Preserve server volumes and maintain server backups. Reinstalling a phone does not erase history; deleting the server volumes does.

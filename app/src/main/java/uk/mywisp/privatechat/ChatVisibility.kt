@@ -18,7 +18,7 @@ internal object ChatVisibilityApi {
         items.forEach { (id, item) -> root.put(id, JSONObject().put("cutoff", item.cutoff).put("hidden", item.hidden).put("updated", item.updated)) }
     }
     fun latestTime(base: String, token: String, room: String): Long {
-        val filter = Gateway.escaped("{\"types\":[\"m.room.encrypted\"]}")
+        val filter = Gateway.escaped("{\"types\":[\"m.room.message\"]}")
         val page = Gateway.call(base, "/_matrix/client/v3/rooms/${Gateway.escaped(room)}/messages?dir=b&limit=1&filter=$filter", token = token)
         return page.optJSONArray("chunk")?.optJSONObject(0)?.optLong("origin_server_ts") ?: 0L
     }

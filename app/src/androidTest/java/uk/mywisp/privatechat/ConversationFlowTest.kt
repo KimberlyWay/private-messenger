@@ -30,7 +30,7 @@ class ConversationFlowTest {
         repos.forEach { assertNull("Repository action failed: " + it.state.value.error, it.state.value.error) }
     }
 
-    @Test fun firstContactBothDirectionsUsesOneRoomAndDeliversWithoutManualSas() = runBlocking(Dispatchers.IO) {
+    @Test fun cloudHistoryAndAttachmentsSurviveLoginOnMultipleDevices() = runBlocking(Dispatchers.IO) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
         val leftContext = AccountContext(context, "conversation_a_$suffix")
@@ -47,8 +47,6 @@ class ConversationFlowTest {
             bob.authenticate(BuildConfig.DEFAULT_SERVER, "private_" + bobName, bobName, password, true)
             until("Register both accounts") { alice.state.value.userId != null && bob.state.value.userId != null && !alice.state.value.busy && !bob.state.value.busy }
             noError(alice, bob)
-            assertTrue(alice.state.value.cryptoReady && alice.state.value.verified)
-            assertTrue(bob.state.value.cryptoReady && bob.state.value.verified)
             alice.findAndChat(bobName)
             until("Create initial direct room") { alice.state.value.roomId != null && !alice.state.value.busy }
             noError(alice)
@@ -60,7 +58,7 @@ class ConversationFlowTest {
             noError(alice, bob)
             val text = "first-contact-" + UUID.randomUUID()
             alice.sendText(text)
-            until("Bob decrypts the first message without manual SAS") {
+            until("Bob receives the first cloud message") {
                 bob.state.value.messages.any { it.text == text && !it.own } || alice.state.value.sendError != null || alice.state.value.error != null
             }
             noError(alice, bob); assertNull(alice.state.value.sendError)
@@ -71,18 +69,37 @@ class ConversationFlowTest {
             noError(alice, bob); assertNull(bob.state.value.sendError)
             assertEquals(listOf(id), alice.state.value.rooms.map { it.id })
             assertEquals(listOf(id), bob.state.value.rooms.map { it.id })
-            until("Both sides back up their keys before reinstall") { alice.state.value.backupStatus == "ready" && bob.state.value.backupStatus == "ready" }
-            // A fresh native login must recover keys using the human password, not a manually copied key.
+            // History is server-backed: the first device and its keys are unnecessary.
+            val picture = File(leftContext.cacheDir, "cloud-picture.png")
+            val bitmap = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(android.graphics.Color.BLUE)
+            picture.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
+            val imageBytes = picture.readBytes()
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "cloud-$suffix.png")
+                put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PrivateMessengerTest")
+            }
+            val imageUri = requireNotNull(context.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values))
+            requireNotNull(context.contentResolver.openOutputStream(imageUri)).use { it.write(imageBytes) }
+            alice.sendPicked(imageUri)
+            until("Photo is persisted remotely") { bob.state.value.messages.any { it.attachment?.kind == "image" } }
+            noError(alice, bob)
+            until("Upload action completes") { !alice.state.value.busy }
+            context.contentResolver.delete(imageUri, null, null)
+            picture.delete()
             bob.logout()
             until("Bob logs out") { bob.state.value.userId == null && !bob.state.value.busy }
             bob.authenticate(BuildConfig.DEFAULT_SERVER, "private_" + bobName, "", password, false)
             until("New Bob device signs in") { bob.state.value.userId != null && !bob.state.value.busy }
             noError(bob)
-            assertTrue("Password recovery must verify the new device without resetting the identity", bob.state.value.verified)
-            assertTrue(bob.state.value.managedRecovery)
             bob.findAndChat(aliceName)
             until("Re-login reuses the canonical room") { bob.state.value.roomId == id && !bob.state.value.busy }
-            until("History decrypts on a fresh device") { bob.state.value.messages.any { it.text == text } && bob.state.value.messages.any { it.text == reply } }
+            until("History loads on a fresh device") { bob.state.value.messages.any { it.text == text } && bob.state.value.messages.any { it.text == reply } }
+            until("Photo history on a new device") { bob.state.value.messages.any { it.attachment?.kind == "image" } }
+            val receivedPhoto = requireNotNull(bob.state.value.messages.first { it.attachment?.kind == "image" }.attachment)
+            assertArrayEquals(imageBytes, bob.download(receivedPhoto).readBytes())
             val fresh = "fresh-device-" + UUID.randomUUID()
             bob.sendText(fresh)
             until("The restored device can send") { alice.state.value.messages.any { it.text == fresh } || bob.state.value.error != null || bob.state.value.sendError != null }
@@ -93,9 +110,13 @@ class ConversationFlowTest {
             assertFalse(bob.diagnostics.export().contains(token))
             secondBob.authenticate(BuildConfig.DEFAULT_SERVER, "private_" + bobName, "", password, false)
             until("Another phone signs in with the same password") { secondBob.state.value.userId != null && !secondBob.state.value.busy }
-            noError(secondBob); assertTrue(secondBob.state.value.verified)
+            noError(secondBob)
             secondBob.findAndChat(aliceName)
             until("Same conversation on the other phone") { secondBob.state.value.roomId == id && !secondBob.state.value.busy }
+            until("Concurrent phone sees the existing history") {
+                secondBob.state.value.messages.any { it.text == text } && secondBob.state.value.messages.any { it.attachment?.kind == "image" }
+            }
+            assertArrayEquals(imageBytes, secondBob.download(requireNotNull(secondBob.state.value.messages.first { it.attachment?.kind == "image" }.attachment)).readBytes())
             bob.deleteCurrentChat()
             until("Delete removes the chat from the account list") { bob.state.value.roomId == null && bob.state.value.rooms.isEmpty() && !bob.state.value.busy }
             noError(bob)

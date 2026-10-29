@@ -42,6 +42,7 @@ async def lifespan(app):
         await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credential_version INTEGER NOT NULL DEFAULT 1")
         await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credential_salt TEXT")
         await connection.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pending_salt TEXT")
+        await connection.execute("ALTER TABLE direct_chats ADD COLUMN IF NOT EXISTS cloud_room_id TEXT")
     yield
     await http.aclose()
     await pool.close()
@@ -122,7 +123,7 @@ async def health():
 @app.get("/api/config")
 async def config():
     return {"server_name": SERVER_NAME, "public_base_url": PUBLIC_URL,
-            "registration": True, "max_upload_bytes": 64 * 1024 * 1024}
+            "chat_mode": "cloud-v1", "registration": True, "max_upload_bytes": 64 * 1024 * 1024}
 
 
 @app.post("/api/register", status_code=201)
@@ -243,8 +244,7 @@ async def reusable_dm(room_id, own, peer, headers):
     if set(active) != {own, peer} or active.get(own) != "join":
         return False
     encryption = await http.get(path + "/state/m.room.encryption", headers=headers)
-    return (encryption.status_code == 200 and
-            encryption.json().get("algorithm") == "m.megolm.v1.aes-sha2")
+    return encryption.status_code == 404
 
 
 @app.post("/api/chats")
@@ -266,12 +266,12 @@ async def direct_chat(body: DirectChatRequest, request: Request):
                     raise HTTPException(400, "Выберите другого пользователя")
                 low, high = sorted((own, peer))
                 await connection.execute("INSERT INTO direct_chats(user_low,user_high) VALUES (%s,%s) ON CONFLICT DO NOTHING", (low, high))
-                row = await (await connection.execute("SELECT room_id FROM direct_chats WHERE user_low=%s AND user_high=%s FOR UPDATE", (low, high))).fetchone()
+                row = await (await connection.execute("SELECT cloud_room_id FROM direct_chats WHERE user_low=%s AND user_high=%s FOR UPDATE", (low, high))).fetchone()
                 room_id = row[0]
                 if room_id is None:
                     # A deterministic, secret-derived alias also closes the crash window
                     # between Synapse creating a room and PostgreSQL committing its ID.
-                    local_alias = "pm_" + hmac.new(SECRET.encode(), ("direct-v1\0" + low + "\0" + high).encode(), hashlib.sha256).hexdigest()
+                    local_alias = "pm_" + hmac.new(SECRET.encode(), ("cloud-direct-v1\0" + low + "\0" + high).encode(), hashlib.sha256).hexdigest()
                     alias = "#" + local_alias + ":" + SERVER_NAME
                     directory = await http.get("/_matrix/client/v3/directory/room/" + quote(alias, safe=""), headers=headers)
                     if directory.status_code == 200:
@@ -293,11 +293,11 @@ async def direct_chat(body: DirectChatRequest, request: Request):
                         created = await http.post("/_matrix/client/v3/createRoom", headers=headers, json={
                             "room_alias_name": local_alias,
                             "is_direct": True, "visibility": "private", "preset": "private_chat", "invite": [peer],
-                            "initial_state": [{"type": "m.room.encryption", "state_key": "",
-                                               "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]})
+                            "initial_state": [{"type": "m.room.history_visibility", "state_key": "",
+                                               "content": {"history_visibility": "shared"}}]})
                         created.raise_for_status()
                         room_id = created.json()["room_id"]
-                    await connection.execute("UPDATE direct_chats SET room_id=%s WHERE user_low=%s AND user_high=%s", (room_id, low, high))
+                    await connection.execute("UPDATE direct_chats SET cloud_room_id=%s WHERE user_low=%s AND user_high=%s", (room_id, low, high))
                 return {"room_id": room_id, "user_id": peer}
     except httpx.HTTPError:
         raise HTTPException(503, "Не удалось открыть личный чат. Попробуйте ещё раз; новый чат не будет создан повторно") from None

@@ -1,6 +1,7 @@
 name: End-to-end integration
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches: [main]
     paths-ignore: ["**.md", "docs/**"]
@@ -29,7 +30,7 @@ jobs:
         run: python3 server/tests/smoke.py
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
-      - name: Verify real encryption and key recovery on Android
+      - name: Verify cloud messaging, history and multi-device login on Android
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
