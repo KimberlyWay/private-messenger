@@ -166,6 +166,8 @@ internal fun PeerProfileSheet(repo: MessengerRepository, user: String, close: ()
     var error by remember { mutableStateOf(false) }
     var attempt by remember { mutableIntStateOf(0) }
     var opened by remember { mutableStateOf<File?>(null) }
+    var openedKind by remember { mutableStateOf("image") }
+    val state by repo.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     LaunchedEffect(user, attempt) { error = false; try { profile = repo.userProfile(user, true) } catch (_: Exception) { error = true } }
     ModalBottomSheet(onDismissRequest = close) {
@@ -173,7 +175,7 @@ internal fun PeerProfileSheet(repo: MessengerRepository, user: String, close: ()
             item {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val p = profile
-                    Box(Modifier.clickable(enabled = p?.avatar != null) { scope.launchSafely({ error = true }) { opened = repo.profilePhotoUrl(requireNotNull(p?.avatar)) } }) {
+                    Box(Modifier.clickable(enabled = p?.avatar != null) { scope.launchSafely({ error = true }) { openedKind = "image"; opened = repo.profilePhotoUrl(requireNotNull(p?.avatar)) } }) {
                         ProfileAvatar(repo, user, p?.name.orEmpty(), attempt, 144, p?.shape)
                     }
                     Text(p?.name?.ifBlank { user.substringBefore(':') } ?: user.substringBefore(':'), style = MaterialTheme.typography.headlineMedium)
@@ -189,15 +191,27 @@ internal fun PeerProfileSheet(repo: MessengerRepository, user: String, close: ()
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(profile!!.photos) { mxc ->
                             val bitmap by produceState<android.graphics.Bitmap?>(null, mxc) { value = withContext(Dispatchers.IO) { runCatching { decodeProfile(repo.profilePhotoUrl(mxc).path, 512) }.getOrNull() } }
-                            Box(Modifier.clickable { scope.launchSafely({ error = true }) { opened = repo.profilePhotoUrl(mxc) } }) { AvatarArtwork(bitmap, "", "squircle", 96) }
+                            Box(Modifier.clickable { scope.launchSafely({ error = true }) { openedKind = "image"; opened = repo.profilePhotoUrl(mxc) } }) { AvatarArtwork(bitmap, "", "squircle", 96) }
                         }
                     }
                 }
             }
+            if (state.peerId == user) {
+                item { HorizontalDivider(); Text("Медиа в переписке", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleMedium) }
+                val media = state.messages.mapNotNull { it.attachment }
+                if (media.isEmpty()) item { Text("В загруженной части истории пока нет вложений", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                items(media.takeLast(30)) { attachment ->
+                    SettingsRow(when (attachment.kind) { "image" -> Icons.Default.Image; "voice" -> Icons.Default.Mic; "file" -> Icons.Default.InsertDriveFile; else -> Icons.Default.Videocam },
+                        when (attachment.kind) { "image" -> "Фото"; "voice" -> "Голосовое сообщение"; "circle" -> "Кружочек"; "file" -> attachment.name; else -> "Видео" }, "Открыть вложение") {
+                        scope.launchSafely({ error = true }) { openedKind = attachment.kind; opened = repo.download(attachment) }
+                    }
+                }
+                item { TextButton(onClick = repo::older, enabled = !state.busy) { Text("Загрузить предыдущие") } }
+            }
             item { Spacer(Modifier.height(20.dp)) }
         }
     }
-    opened?.let { MediaDialog(it, "image") { opened = null } }
+    opened?.let { MediaDialog(it, openedKind) { opened = null } }
 }
 
 private fun kotlinx.coroutines.CoroutineScope.launchSafely(onError: () -> Unit, block: suspend () -> Unit) = launch { try { block() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { onError() } }

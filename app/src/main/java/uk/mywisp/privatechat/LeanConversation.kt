@@ -41,6 +41,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
@@ -104,6 +105,8 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
         if (selection.isEmpty()) { menu = false; choosing = false }
     }
     BackHandler(selection.isNotEmpty()) { clearSelection() }
+    var firstUnread by remember(s.roomId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(s.unreadBeforeId) { if (firstUnread == null) firstUnread = s.unreadBeforeId }
     val list = rememberLazyListState()
     var previousLast by remember(s.roomId) { mutableStateOf<String?>(null) }
     LaunchedEffect(s.messages.lastOrNull()?.id) {
@@ -112,6 +115,11 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
         previousLast = latest?.id
     }
     val visibleMessages = s.messages.filter { (!starredOnly || it.starred) && (search.isBlank() || it.text.contains(search, true)) }
+    LaunchedEffect(list, s.messages.lastOrNull()?.id, search, starredOnly, s.inForeground) {
+        snapshotFlow { list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }.collect { last ->
+            if (!starredOnly && search.isBlank() && last >= s.messages.size && s.messages.isNotEmpty()) repo.markVisibleRead()
+        }
+    }
     Column(Modifier.fillMaxSize().imePadding()) {
         if (choosing) Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -132,7 +140,10 @@ internal fun LeanConversation(repo: MessengerRepository, s: ChatState, overlay: 
                     if (index == 0 || day(m.time) != day(visibleMessages[index - 1].time)) Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
                         Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) { Text(dayLabel(m.time), Modifier.padding(horizontal = 12.dp, vertical = 5.dp), style = MaterialTheme.typography.labelMedium) }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (m.id == firstUnread) Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        HorizontalDivider(Modifier.weight(1f)); Text("Не прочитано", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); HorizontalDivider(Modifier.weight(1f))
+                    }
+                    Row(Modifier.animateItem(), verticalAlignment = Alignment.CenterVertically) {
                         if (choosing) Checkbox(m.id in selection, { if (selection.size < 100 || m.id in selection) selection = if (m.id in selection) selection - m.id else selection + m.id })
                         Box(Modifier.weight(1f)) {
                             MessageBubble(repo, m, selected = m.id in selection,

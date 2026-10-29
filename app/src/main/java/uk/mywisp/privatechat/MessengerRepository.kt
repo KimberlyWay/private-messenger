@@ -29,6 +29,7 @@ data class ChatState(
     val connection: ConnectionStatus = ConnectionStatus.CONNECTING, val liveNotifications: Boolean = true,
     val loading: Boolean = true, val busy: Boolean = false, val error: String? = null,
     val userId: String? = null, val server: String = "", val rooms: List<ChatRoom> = emptyList(),
+    val unreadBeforeId: String? = null, val inForeground: Boolean = false,
     val roomId: String? = null, val roomName: String = "", val peerId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val personalStatus: String = "", val avatarShape: String = "circle",
@@ -181,7 +182,7 @@ class MessengerRepository(private val context: Context) {
         directPrefs.all.forEach { (key, value) ->
             if (key.startsWith(ownPrefix) && value is String) canonical[key.removePrefix(ownPrefix)] = value
         }
-        mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base) }
+        mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base, inForeground = foreground) }
         mutable.update { it.copy(liveNotifications = notices.enabled) }
         built.registerNotificationHandler(object : SyncNotificationListener {
             override fun onNotification(notification: NotificationItem, roomId: String) {
@@ -240,7 +241,8 @@ class MessengerRepository(private val context: Context) {
 
     fun setForeground(active: Boolean) {
         foreground = active
-        if (active) { notices.clearMessages(); resumeConnection(); markCurrentRead() }
+        mutable.update { it.copy(inForeground = active) }
+        if (active) { notices.clearMessages(); resumeConnection() }
     }
 
     fun setLiveNotifications(enabled: Boolean) {
@@ -297,7 +299,7 @@ class MessengerRepository(private val context: Context) {
                 if (visibility[active]?.hidden == true) back()
                 else {
                     loadMessagePreferences(active)
-                    synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message)) } }
+                    synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message), unreadBeforeId = unreadMessageId()) } }
                 }
             }
             ensureVisibilityChecks()
@@ -439,14 +441,12 @@ class MessengerRepository(private val context: Context) {
                 synchronized(itemLock) {
                     if (timelineGeneration != generation) return
                     applyDiff(diff)
-                    mutable.update { it.copy(messages = items.mapNotNull(::message)) }
-                    markCurrentRead()
+                    mutable.update { it.copy(messages = items.mapNotNull(::message), unreadBeforeId = unreadMessageId()) }
                 }
             }
         })
         currentTimeline.fetchMembers()
         currentTimeline.paginateBackwards(30u)
-        markCurrentRead()
     }
 
     private fun applyDiff(diffs: List<TimelineDiff>) {
@@ -523,8 +523,9 @@ class MessengerRepository(private val context: Context) {
         val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
         val pickedName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }.orEmpty()
         val extension = pickedName.substringAfterLast('.', "bin").take(10).filter { it.isLetterOrDigit() }.ifBlank { "bin" }
-        val directory = File(context.cacheDir, "uploads").apply { mkdirs() }
-        val file = File(directory, "media_${UUID.randomUUID()}.$extension")
+        val directory = File(context.cacheDir, "uploads/" + UUID.randomUUID()).apply { mkdirs() }
+        val safeName = pickedName.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").take(120).trim('.').ifBlank { "media.$extension" }
+        val file = File(directory, safeName)
         try {
         context.contentResolver.openInputStream(uri)?.use { input ->
             file.outputStream().use { output ->
@@ -537,17 +538,17 @@ class MessengerRepository(private val context: Context) {
             }
         } ?: error("Файл недоступен")
         } catch (e: Exception) { file.delete(); throw e }
-        sendFileInternal(file, if (mime.startsWith("image/")) "image" else if (mime.startsWith("video/")) "video" else "file", mime, 0, pickedName.take(128).ifBlank { "Вложение" })
+        sendFileInternal(file, if (mime.startsWith("image/")) "image" else if (mime.startsWith("video/")) "video" else "file", mime, 0)
     }
 
     fun sendRecorded(file: File, kind: String, duration: Long) = action("sendRecorded") {
         sendFileInternal(file, kind, if (kind == "voice") "audio/mp4" else "video/mp4", duration)
     }
 
-    private suspend fun sendFileInternal(file: File, kind: String, mime: String, millis: Long, filename: String? = null) {
+    private suspend fun sendFileInternal(file: File, kind: String, mime: String, millis: Long) {
         sendingRoom()
         require(file.length() in 1..MAX_MEDIA) { "Файл пуст или больше 50 МБ" }
-        val params = UploadParameters(UploadSource.File(file.path), filename, null, null, null,
+        val params = UploadParameters(UploadSource.File(file.path), null, null, null, null,
             if (kind == "circle") "{\"uk.mywisp.circle\":true}" else null)
         val info = when (kind) {
             "image" -> AttachmentKind.Image(ImageInfo(null, null, mime, file.length().toULong(), null, null, null, false), null)
@@ -651,14 +652,20 @@ class MessengerRepository(private val context: Context) {
         }
         file
     }
-    private fun markCurrentRead() {
+    private fun unreadMessageId(): String? {
+        val marker = items.indexOfFirst { it.asVirtual() == VirtualTimelineItem.ReadMarker }
+        if (marker < 0) return null
+        return items.drop(marker + 1).firstNotNullOfOrNull { item -> message(item)?.takeIf { !it.own }?.id }
+    }
+
+    fun markVisibleRead() {
         if (!foreground) return
         val roomId = state.value.roomId ?: return
         val latest = state.value.messages.lastOrNull()?.id ?: return
         if (latest == lastReadEvent || !latest.startsWith("$")) return
         lastReadEvent = latest
         val current = client ?: return
-        scope.launch { try { current.getRoom(roomId)?.markAsRead(ReceiptType.READ) }
+        scope.launch { try { current.getRoom(roomId)?.let { room -> room.markAsRead(ReceiptType.READ); room.markAsRead(ReceiptType.FULLY_READ) } }
             catch (e: Exception) { if (e is CancellationException) throw e; diagnostics.record("WARNING", "READ_RECEIPT_FAILED", error = e) } }
     }
 
@@ -678,7 +685,7 @@ class MessengerRepository(private val context: Context) {
         Gateway.call(state.value.server, "/api/messages/preferences", JSONObject().put("room_id", room)
             .put("event_ids", org.json.JSONArray(ids)).put("field", field).put("enabled", enabled), data.getString("access_token"))
         loadMessagePreferences(room, true)
-        if (state.value.roomId == room) synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message)) } }
+        if (state.value.roomId == room) synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message), unreadBeforeId = unreadMessageId()) } }
         withContext(Dispatchers.Main) { applied() }
     }
 

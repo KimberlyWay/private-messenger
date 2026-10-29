@@ -145,7 +145,7 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
                         else if (loading) CircularProgressIndicator(Modifier.padding(16.dp))
                         else Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(if (attachment.kind == "voice") Icons.Default.PlayArrow else if (circle) Icons.Default.PlayCircle else if (attachment.kind == "file") Icons.Default.InsertDriveFile else Icons.Default.Movie, null, Modifier.size(40.dp))
-                            Text(if (loadError) "Нажмите, чтобы повторить" else if (file != null) "Воспроизвести" else when (attachment.kind) {
+                            Text(if (loadError) "Нажмите, чтобы повторить" else if (file != null) if (attachment.kind == "file") "Открыть файл" else "Воспроизвести" else when (attachment.kind) {
                                 "voice" -> "Голосовое"; "circle" -> "Кружочек"; "video" -> "Видео"; "file" -> attachment.name; else -> "Фото"
                             })
                         }
