@@ -123,19 +123,20 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
     val appearance = LocalAppearance.current
     val locale = Locale.forLanguageTag(androidx.compose.ui.text.intl.Locale.current.toLanguageTag())
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.own) Arrangement.End else Arrangement.Start) {
-        Surface(shape = RoundedCornerShape(topStart = appearance.bubbleRadius.dp, topEnd = appearance.bubbleRadius.dp, bottomStart = if (message.own) appearance.bubbleRadius.dp else 8.dp, bottomEnd = if (message.own) 8.dp else appearance.bubbleRadius.dp), color = if (message.own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        Surface(shape = RoundedCornerShape(topStart = appearance.bubbleRadius.dp, topEnd = appearance.bubbleRadius.dp, bottomStart = if (message.own) appearance.bubbleRadius.dp else 8.dp, bottomEnd = if (message.own) 8.dp else appearance.bubbleRadius.dp), color = if (message.own) MaterialTheme.colorScheme.primaryFixedDim else MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = if (message.own) MaterialTheme.colorScheme.onPrimaryFixed else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.widthIn(max = 310.dp).combinedClickable(onClick = onClick, onLongClick = onLongPress), tonalElevation = if (selected) 6.dp else 0.dp) {
             Column(Modifier.padding(if (appearance.compact) 8.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (quote != null) Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .45f)) {
-                    Column(Modifier.padding(10.dp)) { Text("В ответ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); Text(quote, maxLines = 2, style = MaterialTheme.typography.bodySmall) }
+                if (quote != null) Surface(shape = RoundedCornerShape(12.dp), color = if (message.own) MaterialTheme.colorScheme.primaryFixed else MaterialTheme.colorScheme.surfaceContainerHighest) {
+                    Column(Modifier.padding(10.dp)) { Text("В ответ", style = MaterialTheme.typography.labelSmall, color = if (message.own) MaterialTheme.colorScheme.onPrimaryFixedVariant else MaterialTheme.colorScheme.primary); Text(quote, maxLines = 2, style = MaterialTheme.typography.bodySmall) }
                 }
                 if (attachment == null) {
-                    Text(message.text, maxLines = if (condensed) 8 else Int.MAX_VALUE, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge.copy(fontSize = appearance.textSize.sp), color = if (message.own) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
+                    Text(message.text, maxLines = if (condensed) 8 else Int.MAX_VALUE, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge.copy(fontSize = appearance.textSize.sp), color = if (message.own) MaterialTheme.colorScheme.onPrimaryFixed else MaterialTheme.colorScheme.onSurface)
                 }
                 else {
                     val circle = attachment.kind == "circle"
                     Box(Modifier.then(if (circle) Modifier.size(200.dp).clip(CircleShape) else Modifier.fillMaxWidth().heightIn(min = 64.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainer).combinedClickable(onLongClick = onLongPress, onClick = {
+                        .background(if (message.own) MaterialTheme.colorScheme.primaryFixed else MaterialTheme.colorScheme.surfaceContainer).combinedClickable(onLongClick = onLongPress, onClick = {
                             if (selected) onClick() else if (file != null) opened = file else { shouldLoad = true; attempt++ }
                         }), contentAlignment = Alignment.Center) {
                         if (image != null) Image(image!!.asImageBitmap(), "Фото", Modifier.fillMaxWidth().heightIn(max = 280.dp))
@@ -153,9 +154,9 @@ internal fun MessageBubble(repo: MessengerRepository, message: ChatMessage, onLo
                     if (message.starred) Icon(Icons.Default.Star, "Помечено", Modifier.size(12.dp))
                     Text(if (message.status.isNotEmpty()) message.status else SimpleDateFormat("HH:mm", locale).format(Date(message.time)),
                         style = MaterialTheme.typography.labelSmall,
-                        color = (if (message.own) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = .75f))
+                        color = (if (message.own) MaterialTheme.colorScheme.onPrimaryFixed else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = .75f))
                     if (message.own && message.status.isEmpty()) Icon(if (message.read) Icons.Default.DoneAll else Icons.Default.Done,
-                        if (message.read) "Прочитано" else "Отправлено", Modifier.size(15.dp), tint = if (message.read) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimaryContainer)
+                        if (message.read) "Прочитано" else "Отправлено", Modifier.size(15.dp), tint = if (message.own) MaterialTheme.colorScheme.onPrimaryFixed.copy(alpha = if (message.read) .9f else .6f) else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

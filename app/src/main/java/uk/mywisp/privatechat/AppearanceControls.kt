@@ -135,9 +135,9 @@ private fun ChatAppearancePreview(a: Appearance) {
                     fontSize = a.textSize.sp, color = MaterialTheme.colorScheme.onSurface)
             }
             Surface(Modifier.align(Alignment.End), shape = RoundedCornerShape(a.bubbleRadius.dp),
-                color = MaterialTheme.colorScheme.primaryContainer) {
+                color = MaterialTheme.colorScheme.primaryFixedDim) {
                 Text("Теперь всё по-моему ✨", Modifier.padding(if (a.compact) 8.dp else 12.dp),
-                    fontSize = a.textSize.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    fontSize = a.textSize.sp, color = MaterialTheme.colorScheme.onPrimaryFixed)
             }
         }
     }

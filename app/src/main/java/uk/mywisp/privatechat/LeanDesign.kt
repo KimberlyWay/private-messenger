@@ -51,7 +51,7 @@ internal fun LeanMark(size: Int = 80) {
 
 @Composable
 internal fun ProfileAvatar(repo: MessengerRepository, user: String?, name: String, revision: Int, size: Int, shapeOverride: String? = null) {
-    var profile by remember(user, revision) { mutableStateOf(UserProfile(name = name)) }
+    var profile by remember(user) { mutableStateOf(UserProfile(name = name)) }
     val bitmap by produceState<Bitmap?>(null, user, revision) {
         value = withContext(Dispatchers.IO) {
             runCatching {
