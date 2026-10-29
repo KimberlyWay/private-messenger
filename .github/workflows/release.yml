@@ -3,13 +3,20 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'New alpha tag, for example v0.1.0-alpha.1'
+        description: 'New alpha tag, for example v0.4.0-alpha.1'
         required: true
-        default: v0.1.0-alpha.1
+        default: v0.4.0-alpha.1
+  workflow_run:
+    workflows: ['End-to-end integration']
+    types: [completed]
+    branches: [main]
 permissions:
   contents: read
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
+    env:
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -17,23 +24,52 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Require successful checks on this commit and validate tag
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - name: Require successful checks on this exact commit and select release tag
+        id: gate
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            current=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+            if [ "$current" != "$RELEASE_SHA" ]; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+            TAG="v${version}-alpha.1"
+          fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || exit 1
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           for workflow in android.yml backend.yml encryption.yml; do
-            status=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&per_page=1" --jq '.workflow_runs[0].conclusion')
+            for attempt in $(seq 1 20); do
+              status=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$RELEASE_SHA&per_page=1" --jq '.workflow_runs[0].conclusion')
+              [ "$status" = success ] && break
+              case "$status" in failure|cancelled|timed_out|action_required) exit 1 ;; esac
+              sleep 15
+            done
             test "$status" = success || { echo "Checks have not passed: $workflow"; exit 1; }
           done
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
+        if: steps.gate.outputs.publish == 'true'
         with: {distribution: temurin, java-version: '21'}
       - uses: android-actions/setup-android@v3
+        if: steps.gate.outputs.publish == 'true'
         with: {packages: platform-tools, log-accepted-android-sdk-licenses: false}
       - run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        if: steps.gate.outputs.publish == 'true'
       - uses: gradle/actions/setup-gradle@v4
+        if: steps.gate.outputs.publish == 'true'
       - name: Build with existing authorized signing key
+        if: steps.gate.outputs.publish == 'true'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -47,18 +83,19 @@ jobs:
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk dist/private-messenger-alpha.apk
           "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs dist/private-messenger-alpha.apk > dist/APK-SIGNING-CERTIFICATE.txt
-          git archive --format=zip --output=dist/server-and-instructions.zip HEAD server README.md SECURITY.md
+          git archive --format=zip --output=dist/server-and-instructions.zip HEAD server README.md SECURITY.md docs THIRD_PARTY_NOTICES.md licenses
           git archive --format=zip --output=dist/source.zip HEAD
           cd dist
           sha256sum *.apk *.zip APK-SIGNING-CERTIFICATE.txt > SHA256SUMS
       - name: Publish alpha
+        if: steps.gate.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ steps.gate.outputs.tag }}
         run: |
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
           Experimental alpha: Android E2EE messenger with self-hosted Matrix server.
           Read README.md and SECURITY.md before deploying. No independent security audit or background push yet.
           APK, complete source, Docker server package and SHA-256 checksums are attached.
           NOTES
-          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "Private Messenger $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
+          gh release create "$TAG" dist/* --target "$RELEASE_SHA" --title "Private Messenger $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
