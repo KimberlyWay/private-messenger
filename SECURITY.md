@@ -1,4 +1,4 @@
-# Security model — cloud chats (0.5.0)
+# Security model — Lean cloud chats (0.6.0)
 
 Messages and attachments are stored by the Matrix homeserver and are readable by its operator. This is a cloud messenger, with no end-to-end encryption or device verification requirement for cloud conversations.
 
@@ -11,3 +11,5 @@ Cloud rooms are private two-person rooms with shared history. Authenticated devi
 Pre-0.5 encrypted messages cannot be converted without their original decryption keys. They are not adopted as cloud rooms. The new client hides these rooms and the server keeps a separate canonical cloud room per pair. No existing accounts, encrypted rooms or databases are deleted by this update.
 
 Never post real passwords, access tokens, signing keys, server configuration or message logs in issues. This is an experimental alpha without an independent audit. Background messaging uses a user-visible remoteMessaging foreground service, not FCM. Android force-stop and device power restrictions can prevent delivery until the app is opened. Preserve the existing APK signing key during updates.
+
+Lean profile names, photos, chosen avatar shapes and status text are visible to authenticated users. Per-account hidden/starred flags are stored under the authenticated user ID and room membership is checked. Hiding a message does not erase it for the other participant. Matrix redaction removes event content from normal history, but cannot revoke downloaded files or other copies already saved by recipients.

@@ -18,6 +18,21 @@ import java.io.File
 class CustomizationTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
 
+    @Test fun photoViewerAppliesCameraOrientation() {
+        val file = File(ui.activity.cacheDir, "camera-orientation.jpg")
+        val source = Bitmap.createBitmap(80, 40, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }
+        try {
+            file.outputStream().use { check(source.compress(Bitmap.CompressFormat.JPEG, 95, it)) }
+            android.media.ExifInterface(file.path).apply {
+                setAttribute(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_ROTATE_90.toString())
+                saveAttributes()
+            }
+            val decoded = requireNotNull(decodeProfile(file.path))
+            try { assertEquals(40, decoded.width); assertEquals(80, decoded.height) }
+            finally { decoded.recycle() }
+        } finally { source.recycle(); file.delete() }
+    }
+
     @Test fun chosenCropMatchesTheUploadedSquare() {
         // Two halves make off-center / incorrect transform regressions visible.
         val source = Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)

@@ -104,6 +104,9 @@ class ConversationFlowTest {
             noError(alice, bob)
             until("Upload action completes") { !alice.state.value.busy }
             context.contentResolver.delete(imageUri, null, null)
+            alice.setAvatar(android.net.Uri.fromFile(picture))
+            until("Profile photo is archived") { !alice.state.value.busy && alice.state.value.avatarUrl != null }
+            noError(alice)
             picture.delete()
             bob.logout()
             until("Bob logs out") { bob.state.value.userId == null && !bob.state.value.busy }
@@ -133,6 +136,37 @@ class ConversationFlowTest {
                 secondBob.state.value.messages.any { it.text == text } && secondBob.state.value.messages.any { it.attachment?.kind == "image" }
             }
             assertArrayEquals(imageBytes, secondBob.download(requireNotNull(secondBob.state.value.messages.first { it.attachment?.kind == "image" }.attachment)).readBytes())
+            alice.saveProfileDetails("На своей волне", "flower")
+            until("Public profile changes commit") { !alice.state.value.busy }
+            noError(alice)
+            val peerProfile = secondBob.userProfile(requireNotNull(alice.state.value.userId), true)
+            assertEquals("На своей волне", peerProfile.status)
+            assertEquals("flower", peerProfile.shape)
+            assertTrue("Avatar history is available to the peer", peerProfile.photos.isNotEmpty())
+            val original = bob.state.value.messages.first { it.text == text }
+            bob.messagePreference(id, listOf(original.id), "hidden")
+            until("Selective deletion is synchronized across account devices") {
+                bob.state.value.messages.none { it.id == original.id } && secondBob.state.value.messages.none { it.id == original.id } && !bob.state.value.busy
+            }
+            noError(bob)
+            assertTrue("Other participant retains the message", alice.state.value.messages.any { it.id == original.id })
+            bob.messagePreference(id, listOf(original.id), "hidden", false)
+            until("Undo restores on both devices") { bob.state.value.messages.any { it.id == original.id } && secondBob.state.value.messages.any { it.id == original.id } && !bob.state.value.busy }
+            bob.messagePreference(id, listOf(original.id), "starred")
+            until("Stars synchronize") { secondBob.state.value.messages.any { it.id == original.id && it.starred } && !bob.state.value.busy }
+            val replyText = "reply-relation-" + UUID.randomUUID()
+            bob.sendText(replyText, original)
+            until("Real reply relation reaches the other client") { alice.state.value.messages.any { it.text == replyText && it.replyToId == original.id } }
+            bob.forwardMessages(id, listOf(original.id), id)
+            until("Forward uses a new event from the forwarding user") { alice.state.value.messages.any { it.text == text && !it.own } && !bob.state.value.busy }
+            noError(alice, bob)
+            bob.deleteForEveryone(id, listOf(original.id))
+            until("Deleting another sender's message is rejected") { !bob.state.value.busy }
+            assertNotNull("An incoming event cannot be globally redacted through the repository", bob.state.value.error)
+            assertTrue(alice.state.value.messages.any { it.id == original.id })
+            alice.deleteForEveryone(id, listOf(original.id))
+            until("Own redaction is synchronized to both peers") { alice.state.value.messages.none { it.id == original.id } && bob.state.value.messages.none { it.id == original.id } && !alice.state.value.busy }
+            noError(alice)
             bob.deleteCurrentChat()
             until("Delete removes the chat from the account list") { bob.state.value.roomId == null && bob.state.value.rooms.isEmpty() && !bob.state.value.busy }
             noError(bob)

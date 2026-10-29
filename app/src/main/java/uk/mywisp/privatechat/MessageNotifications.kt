@@ -42,7 +42,7 @@ internal class MessageNotifications(private val context: Context) {
             .setContentIntent(open(context)).setAutoCancel(true).setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(NotificationCompat.Builder(context, MESSAGES).setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Private Messenger").setContentText("Новое сообщение").build())
+                .setContentTitle("Lean").setContentText("Новое сообщение").build())
             .build()
         manager.notify("message:$room", room.hashCode(), notice)
     }
@@ -62,7 +62,7 @@ internal class MessageNotifications(private val context: Context) {
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         fun connection(context: Context, text: String): Notification = NotificationCompat.Builder(context, CONNECTION)
-            .setSmallIcon(R.drawable.ic_notification).setContentTitle("Private Messenger").setContentText(text)
+            .setSmallIcon(R.drawable.ic_notification).setContentTitle("Lean").setContentText(text)
             .setContentIntent(open(context)).setOngoing(true).setOnlyAlertOnce(true).setSilent(true).build()
     }
 }

@@ -20,7 +20,7 @@ import java.util.UUID
 data class ChatRoom(val id: String, val name: String, val invited: Boolean, val peerId: String? = null, val alternateIds: List<String> = emptyList())
 data class Attachment(val source: MediaSource, val name: String, val mime: String, val kind: String)
 data class ChatMessage(val id: String, val sender: String, val own: Boolean, val time: Long,
-    val text: String, val attachment: Attachment? = null, val status: String = "", val trustWarning: String? = null)
+    val text: String, val attachment: Attachment? = null, val status: String = "", val trustWarning: String? = null, val starred: Boolean = false, val read: Boolean = false, val replyToId: String? = null)
 enum class ConnectionStatus(val label: String) {
     CONNECTING("Подключение…"), UPDATING("Обновление…"), CONNECTED("Подключено"), OFFLINE("Нет соединения"), SIGNED_OUT("Войдите снова")
 }
@@ -29,8 +29,10 @@ data class ChatState(
     val connection: ConnectionStatus = ConnectionStatus.CONNECTING, val liveNotifications: Boolean = true,
     val loading: Boolean = true, val busy: Boolean = false, val error: String? = null,
     val userId: String? = null, val server: String = "", val rooms: List<ChatRoom> = emptyList(),
+    val unreadBeforeId: String? = null, val inForeground: Boolean = false,
     val roomId: String? = null, val roomName: String = "", val peerId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
+    val personalStatus: String = "", val avatarShape: String = "circle",
     val displayName: String = "", val avatarUrl: String? = null, val profileRevision: Int = 0,
     val sendError: String? = null, val canRetrySend: Boolean = false,
     val alternateRoomIds: List<String> = emptyList(), val historical: Boolean = false)
@@ -40,6 +42,8 @@ class MessengerRepository(private val context: Context) {
     internal val diagnostics = DiagnosticJournal(context)
     val appearance = AppearancePreferences(context)
     private val profiles = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, UserProfile>>()
+    private var profileRefreshJob: Job? = null
+    private var lastProfileRefresh = 0L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val vault = Vault(context)
     private val pendingActions = java.util.concurrent.atomic.AtomicInteger(0)
@@ -48,6 +52,9 @@ class MessengerRepository(private val context: Context) {
     private val directPrefs = context.getSharedPreferences("direct-chats", Context.MODE_PRIVATE)
     private val canonical = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val knownPeers = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val hiddenMessages = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+    private val starredMessages = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+    private val messagePreferenceChecks = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val queueFailures = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile private var allRooms = emptyList<ChatRoom>()
     private var queueListener: TaskHandle? = null
@@ -78,6 +85,7 @@ class MessengerRepository(private val context: Context) {
     private var timelineGeneration = ""
     private val items = mutableListOf<TimelineItem>()
     private val itemLock = Any()
+    private var lastReadEvent = ""
 
     private fun action(name: String, block: suspend () -> Unit) {
         pendingActions.incrementAndGet()
@@ -168,15 +176,16 @@ class MessengerRepository(private val context: Context) {
         built.restoreSession(Session(data.getString("access_token"), null, data.getString("user_id"),
             data.getString("device_id"), base, null, SlidingSyncVersion.NONE))
         client = built
+        lastProfileRefresh = android.os.SystemClock.elapsedRealtime()
         sessionData = data
         vault.save(data)
-        canonical.clear(); knownPeers.clear(); allRooms = emptyList(); visibility.clear(); visibilityChecks.clear()
+        canonical.clear(); knownPeers.clear(); allRooms = emptyList(); visibility.clear(); visibilityChecks.clear(); hiddenMessages.clear(); starredMessages.clear(); messagePreferenceChecks.clear()
         visibility.putAll(ChatVisibilityApi.parse(directPrefs.getString("visibility|" + built.userId(), null)))
         val ownPrefix = built.userId() + "|"
         directPrefs.all.forEach { (key, value) ->
             if (key.startsWith(ownPrefix) && value is String) canonical[key.removePrefix(ownPrefix)] = value
         }
-        mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base) }
+        mutable.update { ChatState(loading = false, busy = it.busy, userId = built.userId(), server = base, inForeground = foreground) }
         mutable.update { it.copy(liveNotifications = notices.enabled) }
         built.registerNotificationHandler(object : SyncNotificationListener {
             override fun onNotification(notification: NotificationItem, roomId: String) {
@@ -235,6 +244,7 @@ class MessengerRepository(private val context: Context) {
 
     fun setForeground(active: Boolean) {
         foreground = active
+        mutable.update { it.copy(inForeground = active) }
         if (active) { notices.clearMessages(); resumeConnection() }
     }
 
@@ -248,6 +258,13 @@ class MessengerRepository(private val context: Context) {
         if (!roomsMutex.tryLock()) return
         try {
             val current = client ?: return
+            if (foreground && android.os.SystemClock.elapsedRealtime() - lastProfileRefresh >= 30_000 && profileRefreshJob?.isActive != true) {
+                lastProfileRefresh = android.os.SystemClock.elapsedRealtime()
+                profileRefreshJob = scope.launch {
+                    try { refreshProfile() }
+                    catch (e: Exception) { if (e is CancellationException) throw e; diagnostics.record("WARNING", "PROFILE_REFRESH_FAILED", error = e) }
+                }
+            }
             val rows = mutableListOf<ChatRoom>()
             ChatVisibilityApi.parse(current.accountData(ChatVisibilityApi.TYPE)).forEach { (id, remote) ->
                 if (remote.updated > (visibility[id]?.updated ?: -1)) visibility[id] = remote
@@ -290,7 +307,10 @@ class MessengerRepository(private val context: Context) {
             val active = state.value.roomId
             if (active != null) {
                 if (visibility[active]?.hidden == true) back()
-                else synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message)) } }
+                else {
+                    loadMessagePreferences(active)
+                    synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message), unreadBeforeId = unreadMessageId()) } }
+                }
             }
             ensureVisibilityChecks()
         } finally { roomsMutex.unlock() }
@@ -389,6 +409,7 @@ class MessengerRepository(private val context: Context) {
             while (room.membership() != Membership.JOINED) { delay(500); room = c.getRoom(id) ?: room }
         }
         require(!room.isEncrypted()) { "Откройте облачный чат через поиск собеседника" }
+        loadMessagePreferences(id, true)
         closeActiveRoom()
         val currentTimeline = room.timeline()
         timeline = currentTimeline
@@ -430,7 +451,7 @@ class MessengerRepository(private val context: Context) {
                 synchronized(itemLock) {
                     if (timelineGeneration != generation) return
                     applyDiff(diff)
-                    mutable.update { it.copy(messages = items.mapNotNull(::message)) }
+                    mutable.update { it.copy(messages = items.mapNotNull(::message), unreadBeforeId = unreadMessageId()) }
                 }
             }
         })
@@ -459,11 +480,13 @@ class MessengerRepository(private val context: Context) {
         val activeRoom = state.value.roomId
         val cutoff = if (activeRoom != null) visibility[activeRoom]?.cutoff ?: -1 else -1
         if (event.timestamp.toLong() <= cutoff) return null
-        val content = (event.content as? TimelineItemContent.MsgLike)?.content?.kind ?: return null
+        val msgLike = (event.content as? TimelineItemContent.MsgLike)?.content ?: return null
+        val content = msgLike.kind
         val id = when (val value = event.eventOrTransactionId) {
             is EventOrTransactionId.EventId -> value.eventId
             is EventOrTransactionId.TransactionId -> value.transactionId
         }
+        if (id in activeRoom?.let { hiddenMessages[it] }.orEmpty()) return null
         val status = if (event.isRemote) "" else if (queueFailures.containsKey(id) || event.localSendState?.javaClass?.simpleName?.contains("Fail") == true)
             "Не отправлено" else "Отправляется…"
         if (content is MsgLikeKind.UnableToDecrypt) return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(),
@@ -473,10 +496,11 @@ class MessengerRepository(private val context: Context) {
             is MessageType.Image -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "image/jpeg", "image")
             is MessageType.Video -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "video/mp4",
                 if (type.content.filename.startsWith("circle_")) "circle" else "video")
+            is MessageType.File -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "application/octet-stream", "file")
             is MessageType.Audio -> Attachment(type.content.source, type.content.filename, type.content.info?.mimetype ?: "audio/mp4", "voice")
             else -> null
         }
-        return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(), msg.body, attachment, status)
+        return ChatMessage(id, event.sender, event.isOwn, event.timestamp.toLong(), msg.body, attachment, status, starred = id in activeRoom?.let { starredMessages[it] }.orEmpty(), read = event.readReceipts.keys.any { it != state.value.userId }, replyToId = msgLike.inReplyTo?.eventId())
     }
 
     fun back() { closeActiveRoom(); mutable.update { it.copy(roomId = null, peerId = null, messages = emptyList()) } }
@@ -496,20 +520,22 @@ class MessengerRepository(private val context: Context) {
         return room
     }
 
-    fun sendText(text: String, queued: () -> Unit = {}) = action("sendText") {
+    fun sendText(text: String, replyTo: ChatMessage? = null, queued: () -> Unit = {}) = action("sendText") {
         require(text.isNotBlank() && text.length <= 16_000) { "Сообщение: от 1 до 16 000 символов" }
         sendingRoom()
-        requireNotNull(timeline).send(messageEventContentNew(MessageType.Text(TextMessageContent(text, null))))
+        if (replyTo == null) requireNotNull(timeline).send(messageEventContentNew(MessageType.Text(TextMessageContent(text, null))))
+        else requireNotNull(timeline).sendReply(messageEventContentNew(MessageType.Text(TextMessageContent(text, null))), replyTo.id)
         withContext(Dispatchers.Main) { queued() }
     }
 
     fun sendPicked(uri: Uri) = action("sendPicked") {
         sendingRoom()
-        val mime = context.contentResolver.getType(uri).orEmpty()
-        require(mime.startsWith("image/") || mime.startsWith("video/")) { "Выберите фото или видео" }
-        val extension = if (mime.startsWith("image/")) "jpg" else "mp4"
-        val directory = File(context.cacheDir, "uploads").apply { mkdirs() }
-        val file = File(directory, "media_${UUID.randomUUID()}.$extension")
+        val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
+        val pickedName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }.orEmpty()
+        val extension = pickedName.substringAfterLast('.', "bin").take(10).filter { it.isLetterOrDigit() }.ifBlank { "bin" }
+        val directory = File(context.cacheDir, "uploads/" + UUID.randomUUID()).apply { mkdirs() }
+        val safeName = pickedName.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").take(80).trim('.').ifBlank { "media.$extension" }
+        val file = File(directory, safeName)
         try {
         context.contentResolver.openInputStream(uri)?.use { input ->
             file.outputStream().use { output ->
@@ -522,7 +548,7 @@ class MessengerRepository(private val context: Context) {
             }
         } ?: error("Файл недоступен")
         } catch (e: Exception) { file.delete(); throw e }
-        sendFileInternal(file, if (mime.startsWith("image/")) "image" else "video", mime, 0)
+        sendFileInternal(file, if (mime.startsWith("image/")) "image" else if (mime.startsWith("video/")) "video" else "file", mime, 0)
     }
 
     fun sendRecorded(file: File, kind: String, duration: Long) = action("sendRecorded") {
@@ -536,6 +562,7 @@ class MessengerRepository(private val context: Context) {
             if (kind == "circle") "{\"uk.mywisp.circle\":true}" else null)
         val info = when (kind) {
             "image" -> AttachmentKind.Image(ImageInfo(null, null, mime, file.length().toULong(), null, null, null, false), null)
+            "file" -> AttachmentKind.File(FileInfo(mime, file.length().toULong(), null, null))
             "voice" -> AttachmentKind.Voice(AudioInfo(Duration.ofMillis(millis), file.length().toULong(), mime), emptyList())
             else -> AttachmentKind.Video(VideoInfo(Duration.ofMillis(millis).takeIf { millis > 0 }, null, null, mime,
                 file.length().toULong(), null, null, null), null)
@@ -548,7 +575,8 @@ class MessengerRepository(private val context: Context) {
         val directory = File(context.cacheDir, "opened-media").apply { mkdirs() }
         val handle = c.getMediaFile(attachment.source, attachment.name, attachment.mime, true, directory.path)
         try {
-            val target = File(directory, UUID.randomUUID().toString() + "." + if (attachment.kind == "image") "img" else "media")
+            val extension = attachment.name.substringAfterLast('.', "bin").take(10).filter { it.isLetterOrDigit() }.ifBlank { "bin" }
+            val target = File(directory, UUID.randomUUID().toString() + "." + if (attachment.kind == "image") "img" else extension)
             check(handle.persist(target.path)) { "Не удалось сохранить вложение" }
             target
         } finally { handle.close() }
@@ -568,7 +596,7 @@ class MessengerRepository(private val context: Context) {
         val profile = ProfileApi.get(state.value.server, data.getString("access_token"), current.userId())
         if (client !== current) return
         profiles[current.userId()] = System.currentTimeMillis() to profile
-        mutable.update { it.copy(displayName = profile.name, avatarUrl = profile.avatar, profileRevision = it.profileRevision + 1) }
+        mutable.update { it.copy(displayName = profile.name, avatarUrl = profile.avatar, personalStatus = profile.status, avatarShape = profile.shape, profileRevision = it.profileRevision + 1) }
     }
 
     fun saveProfile(name: String) = action("saveProfile") {
@@ -600,19 +628,27 @@ class MessengerRepository(private val context: Context) {
         refreshProfile()
     }
 
-    suspend fun profilePhoto(user: String): File? = withContext(Dispatchers.IO) {
-        val data = sessionData ?: return@withContext null
-        val current = client ?: return@withContext null
+    suspend fun userProfile(user: String, force: Boolean = false): UserProfile = withContext(Dispatchers.IO) {
+        val data = requireNotNull(sessionData)
+        val cached = profiles[user]
+        if (!force && cached != null && System.currentTimeMillis() - cached.first < 30_000) cached.second
+        else ProfileApi.get(data.getString("homeserver"), data.getString("access_token"), user).also { profiles[user] = System.currentTimeMillis() to it }
+    }
+
+    fun saveProfileDetails(status: String, shape: String) = action("saveProfileDetails") {
+        require(status.length <= 120 && shape in AVATAR_SHAPES) { "Проверьте статус и форму аватара" }
+        val data = requireNotNull(sessionData)
+        ProfileApi.details(state.value.server, data.getString("access_token"), status, shape)
+        refreshProfile()
+    }
+
+    suspend fun profilePhoto(user: String): File? = userProfile(user).avatar?.let { profilePhotoUrl(it) }
+
+    suspend fun profilePhotoUrl(mxc: String): File = withContext(Dispatchers.IO) {
+        val data = requireNotNull(sessionData)
+        val current = requireNotNull(client)
         val base = data.getString("homeserver")
         val token = data.getString("access_token")
-        val cached = profiles[user]
-        val profile = if (cached != null && System.currentTimeMillis() - cached.first < 60_000) cached.second else {
-            ProfileApi.get(base, token, user).also {
-                if (profiles.size > 200) profiles.clear()
-                profiles[user] = System.currentTimeMillis() to it
-            }
-        }
-        val mxc = profile.avatar ?: return@withContext null
         val hash = java.security.MessageDigest.getInstance("SHA-256").digest((base + mxc).toByteArray())
             .joinToString("") { "%02x".format(it.toInt() and 255) }
         val directory = File(context.cacheDir, "profile-photos").apply { mkdirs() }
@@ -626,6 +662,81 @@ class MessengerRepository(private val context: Context) {
         }
         file
     }
+    private fun unreadMessageId(): String? {
+        val marker = items.indexOfFirst { it.asVirtual() == VirtualTimelineItem.ReadMarker }
+        if (marker < 0) return null
+        return items.drop(marker + 1).firstNotNullOfOrNull { item -> message(item)?.takeIf { !it.own }?.id }
+    }
+
+    fun markVisibleRead() {
+        if (!foreground) return
+        val roomId = state.value.roomId ?: return
+        val latest = state.value.messages.lastOrNull()?.id ?: return
+        if (latest == lastReadEvent || !latest.startsWith("$")) return
+        lastReadEvent = latest
+        val current = client ?: return
+        scope.launch { try { current.getRoom(roomId)?.let { room -> room.markAsRead(ReceiptType.READ); room.markAsRead(ReceiptType.FULLY_READ) } }
+            catch (e: Exception) { if (e is CancellationException) throw e; if (lastReadEvent == latest) lastReadEvent = ""; diagnostics.record("WARNING", "READ_RECEIPT_FAILED", error = e) } }
+    }
+
+    private fun loadMessagePreferences(room: String, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - (messagePreferenceChecks[room] ?: 0) < 5_000) return
+        val data = sessionData ?: return
+        val result = Gateway.call(state.value.server, "/api/messages/preferences/" + Gateway.escaped(room), token = data.getString("access_token"))
+        fun ids(key: String): Set<String> = result.optJSONArray(key)?.let { a -> (0 until a.length()).map(a::getString).toSet() }.orEmpty()
+        hiddenMessages[room] = ids("hidden"); starredMessages[room] = ids("starred")
+        messagePreferenceChecks[room] = now
+    }
+
+    fun messagePreference(room: String, ids: List<String>, field: String, enabled: Boolean = true, applied: () -> Unit = {}) = action("messagePreference") {
+        require(ids.isNotEmpty() && ids.size <= 100 && field in listOf("hidden", "starred"))
+        val data = requireNotNull(sessionData)
+        Gateway.call(state.value.server, "/api/messages/preferences", JSONObject().put("room_id", room)
+            .put("event_ids", org.json.JSONArray(ids)).put("field", field).put("enabled", enabled), data.getString("access_token"))
+        loadMessagePreferences(room, true)
+        if (state.value.roomId == room) synchronized(itemLock) { mutable.update { it.copy(messages = items.mapNotNull(::message), unreadBeforeId = unreadMessageId()) } }
+        withContext(Dispatchers.Main) { applied() }
+    }
+
+    fun deleteForEveryone(roomId: String, ids: List<String>) = action("deleteForEveryone") {
+        val current = requireNotNull(client)
+        val room = requireNotNull(current.getRoom(roomId))
+        val token = requireNotNull(sessionData).getString("access_token")
+        require(ids.size in 1..100)
+        // Check the actual event sender, never a caller-supplied own flag.
+        for (id in ids) {
+            require(id.startsWith("$")) { "Дождитесь отправки сообщения" }
+            val event = Gateway.call(state.value.server, "/_matrix/client/v3/rooms/${Gateway.escaped(roomId)}/event/${Gateway.escaped(id)}", token = token)
+            require(event.optString("sender") == current.userId() && event.optString("type") == "m.room.message") { "У всех можно удалить только свои сообщения" }
+        }
+        for (id in ids) room.redact(id, null)
+    }
+
+    fun forwardMessages(from: String, ids: List<String>, target: String) = action("forwardMessages") {
+        val current = requireNotNull(client)
+        val room = requireNotNull(current.getRoom(target))
+        require(!room.isEncrypted() && room.membership() == Membership.JOINED)
+        require(ids.size in 1..100)
+        val token = requireNotNull(sessionData).getString("access_token")
+        for (id in ids) {
+            val event = Gateway.call(state.value.server, "/_matrix/client/v3/rooms/${Gateway.escaped(from)}/event/${Gateway.escaped(id)}", token = token)
+            require(event.optString("type") == "m.room.message")
+            val content = event.getJSONObject("content")
+            require(content.has("msgtype")) { "Удалённое сообщение нельзя переслать" }
+            content.remove("m.relates_to"); content.remove("m.new_content"); content.remove("m.mentions")
+            content.put("uk.mywisp.lean.forwarded", true)
+            Gateway.call(state.value.server, "/_matrix/client/v3/rooms/${Gateway.escaped(target)}/send/m.room.message/${UUID.randomUUID()}", content, token, "PUT")
+        }
+    }
+
+    fun clearMediaCache() = action("clearMediaCache") {
+        // Only derived, downloaded files; neither SDK databases nor queued uploads.
+        listOf("opened-media", "profile-photos").forEach { name -> File(context.cacheDir, name).deleteRecursively() }
+        profiles.clear()
+        mutable.update { it.copy(profileRevision = it.profileRevision + 1) }
+    }
+
     fun dismissError() { mutable.update { it.copy(error = null) } }
     fun refresh() = action("refresh") {
         resumeConnection(force = true)
@@ -635,6 +746,7 @@ class MessengerRepository(private val context: Context) {
     fun logout() = action("logout") {
         val c = client ?: return@action
         visibilityJob?.cancel(); visibilityJob = null
+        profileRefreshJob?.cancelAndJoin(); profileRefreshJob = null
         syncJob?.cancelAndJoin(); syncJob = null
         c.logout()
         closeActiveRoom(); syncJob?.cancelAndJoin(); syncJob = null
@@ -656,5 +768,5 @@ class MessengerRepository(private val context: Context) {
         }
     }
 
-    companion object { const val MAX_MEDIA = 50L * 1024 * 1024 }
+    companion object { const val MAX_MEDIA = 50L * 1024 * 1024; val AVATAR_SHAPES = listOf("circle", "squircle", "flower", "clover", "pebble") }
 }

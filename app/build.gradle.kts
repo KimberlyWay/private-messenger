@@ -12,8 +12,8 @@ android {
         applicationId = "uk.mywisp.privatechat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.5.1"
+        versionCode = 10
+        versionName = "0.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["allowCleartext"] = "false"
         buildConfigField("boolean", "ALLOW_TEST_HTTP", "false")

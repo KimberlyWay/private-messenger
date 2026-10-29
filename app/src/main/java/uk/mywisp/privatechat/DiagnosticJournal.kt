@@ -51,7 +51,7 @@ internal class DiagnosticJournal(context: Context) {
     fun clear() { synchronized(lock) { mutable.value = emptyList(); persist() } }
     fun export(): String {
         val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z", Locale.ROOT)
-        return "Private Messenger ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\nAndroid ${android.os.Build.VERSION.SDK_INT}\n" +
+        return "Lean ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\nAndroid ${android.os.Build.VERSION.SDK_INT}\n" +
             state.value.joinToString("\n\n") { "${format.format(Date(it.time))} ${it.level} ${it.code}\n${it.detail}" }
     }
 }

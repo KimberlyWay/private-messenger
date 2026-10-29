@@ -20,7 +20,7 @@ class RegistrationUiTest {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
 
     private fun node(label: String): SemanticsNodeInteraction {
-        ui.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(label))
+        ui.onNode(hasScrollToIndexAction() and SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange)).performScrollToNode(hasText(label))
         return ui.onNodeWithText(label)
     }
 
@@ -46,6 +46,7 @@ class RegistrationUiTest {
             ui.waitUntil(60_000) { !repo.state.value.busy && repo.state.value.userId != null }
             ui.onNodeWithText("Начните первую переписку").assertIsDisplayed()
             ui.onNodeWithContentDescription("Настройки").performClick()
+            node("Фото, имя и личный статус").performClick()
             node("@$username").assertIsDisplayed()
             check(Vault(ui.activity).load()?.getString("user_id") == "@$username:ci.invalid") {
                 "The native SDK session must be saved after registration"
@@ -75,6 +76,8 @@ class RegistrationUiTest {
                 check(ProfileApi.get(BuildConfig.DEFAULT_SERVER, session.getString("access_token"), session.getString("user_id")).avatar == null)
             } finally { photo.delete(); bitmap.recycle() }
 
+            ui.onNodeWithContentDescription("Назад").performClick()
+            node("Оформление").performClick()
             node("Тёмная").performClick()
             node("Океан").performClick()
             check(AppearancePreferences(ui.activity).state.value == Appearance("dark", "ocean")) {

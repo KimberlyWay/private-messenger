@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Личный чат</string>
+    <string name="app_name">Lean</string>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>

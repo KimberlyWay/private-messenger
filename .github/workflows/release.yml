@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'New alpha tag, for example v0.5.0-alpha.1'
+        description: 'New alpha tag, for example v0.6.0-alpha.1'
         required: true
-        default: v0.5.0-alpha.1
+        default: v0.6.0-alpha.1
   workflow_run:
     workflows: ['End-to-end integration']
     types: [completed]
@@ -81,8 +81,8 @@ jobs:
           trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
           ./gradlew --no-daemon assembleRelease
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk dist/private-messenger-alpha.apk
-          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs dist/private-messenger-alpha.apk > dist/APK-SIGNING-CERTIFICATE.txt
+          cp app/build/outputs/apk/release/app-release.apk dist/lean.apk
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs dist/lean.apk > dist/APK-SIGNING-CERTIFICATE.txt
           git archive --format=zip --output=dist/server-and-instructions.zip HEAD server README.md SECURITY.md docs THIRD_PARTY_NOTICES.md licenses
           git archive --format=zip --output=dist/source.zip HEAD
           cd dist
@@ -94,7 +94,7 @@ jobs:
           TAG: ${{ steps.gate.outputs.tag }}
         run: |
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          Experimental alpha: Android cloud messenger with a self-hosted Matrix server and HTTPS/TLS transport. Messages are readable by the server operator.
+          Lean experimental alpha: Android cloud messenger with a self-hosted Matrix server and HTTPS/TLS transport. Messages are readable by the server operator.
           Read README.md and SECURITY.md before deploying. No independent security audit or background push yet.
           APK, complete source, Docker server package and SHA-256 checksums are attached.
           NOTES
@@ -105,4 +105,4 @@ jobs:
               exit 0
             fi
           fi
-          gh release create "$TAG" dist/* --target "$RELEASE_SHA" --title "Private Messenger $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
+          gh release create "$TAG" dist/* --target "$RELEASE_SHA" --title "Lean $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease

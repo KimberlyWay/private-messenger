@@ -25,7 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun AvatarEditor(uri: Uri, close: () -> Unit, save: (ByteArray) -> Unit) {
+internal fun AvatarEditor(uri: Uri, close: () -> Unit, save: (ByteArray) -> Unit, shape: String = "circle") {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
@@ -42,7 +42,7 @@ internal fun AvatarEditor(uri: Uri, close: () -> Unit, save: (ByteArray) -> Unit
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("Фото профиля", style = MaterialTheme.typography.headlineMedium)
-                Text("Приближайте двумя пальцами и двигайте фото. В профиле будет видна область внутри круга.",
+                Text("Приближайте двумя пальцами и двигайте фото. Рамка показывает выбранную форму аватара.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 val image = bitmap
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -70,13 +70,19 @@ internal fun AvatarEditor(uri: Uri, close: () -> Unit, save: (ByteArray) -> Unit
                             drawContext.canvas.scale(scale, scale)
                             drawImage(picture)
                             drawContext.canvas.restore()
+                            val outline = leanAvatarShape(shape).createOutline(size, layoutDirection, this)
+                            val border = when (outline) {
+                                is Outline.Generic -> outline.path
+                                is Outline.Rounded -> Path().apply { addRoundRect(outline.roundRect) }
+                                is Outline.Rectangle -> Path().apply { addRect(outline.rect) }
+                            }
                             val mask = Path().apply {
                                 fillType = PathFillType.EvenOdd
                                 addRect(Rect(Offset.Zero, size))
-                                addOval(Rect(Offset.Zero, size))
+                                addPath(border)
                             }
                             drawPath(mask, Color.Black.copy(alpha = .65f))
-                            drawCircle(Color.White, radius = size.minDimension / 2f - 1.dp.toPx(),
+                            drawPath(border, Color.White,
                                 style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
                         }
                     }

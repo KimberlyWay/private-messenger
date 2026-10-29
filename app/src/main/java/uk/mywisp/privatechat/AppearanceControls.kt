@@ -19,7 +19,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal fun LazyListScope.appearanceItems(prefs: AppearancePreferences, a: Appearance) {
+internal fun LazyListScope.appearanceItems(prefs: AppearancePreferences, a: Appearance, section: String = "all") {
+    if (section != "layout") {
     item {
         Text("Оформление", style = MaterialTheme.typography.headlineMedium)
         Text("Ваши цвета, ваш ритм", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -76,7 +77,23 @@ internal fun LazyListScope.appearanceItems(prefs: AppearancePreferences, a: Appe
                 modifier = Modifier.semantics { contentDescription = "Чёрный фон" })
         }
     }
+    }
+    if (section != "layout") {
+    item {
+        Text("Фон переписки", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("plain" to "Чистый", "tonal" to "Тон", "gradient" to "Градиент").forEach { (key, label) ->
+                FilterChip(selected = a.background == key, onClick = { prefs.set(a.copy(background = key)) }, label = { Text(label) })
+            }
+        }
+    }
+    }
     item { ChatAppearancePreview(a) }
+    if (section != "colors") {
+    item {
+        Text("Масштаб интерфейса · ${(a.uiScale * 100).toInt()}%", style = MaterialTheme.typography.titleMedium)
+        Slider(a.uiScale, { prefs.set(a.copy(uiScale = it)) }, valueRange = .85f..1.2f, modifier = Modifier.semantics { contentDescription = "Масштаб интерфейса" })
+    }
     item {
         Text("Размер сообщений · ${a.textSize.toInt()}", style = MaterialTheme.typography.titleMedium)
         Slider(value = a.textSize, onValueChange = { prefs.set(a.copy(textSize = it)) }, valueRange = 14f..22f, steps = 7,
@@ -88,19 +105,12 @@ internal fun LazyListScope.appearanceItems(prefs: AppearancePreferences, a: Appe
             modifier = Modifier.semantics { contentDescription = "Скругление пузырей" })
     }
     item {
-        Text("Фон переписки", style = MaterialTheme.typography.titleMedium)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("plain" to "Чистый", "tonal" to "Тон", "gradient" to "Градиент").forEach { (key, label) ->
-                FilterChip(selected = a.background == key, onClick = { prefs.set(a.copy(background = key)) }, label = { Text(label) })
-            }
-        }
-    }
-    item {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Компактные сообщения", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
             Switch(checked = a.compact, onCheckedChange = { prefs.set(a.copy(compact = it)) },
                 modifier = Modifier.semantics { contentDescription = "Компактные сообщения" })
         }
+    }
     }
     item { TextButton(onClick = prefs::reset) { Text("Сбросить оформление") } }
 }
@@ -125,9 +135,9 @@ private fun ChatAppearancePreview(a: Appearance) {
                     fontSize = a.textSize.sp, color = MaterialTheme.colorScheme.onSurface)
             }
             Surface(Modifier.align(Alignment.End), shape = RoundedCornerShape(a.bubbleRadius.dp),
-                color = MaterialTheme.colorScheme.primaryContainer) {
+                color = MaterialTheme.colorScheme.primaryFixedDim) {
                 Text("Теперь всё по-моему ✨", Modifier.padding(if (a.compact) 8.dp else 12.dp),
-                    fontSize = a.textSize.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    fontSize = a.textSize.sp, color = MaterialTheme.colorScheme.onPrimaryFixed)
             }
         }
     }
